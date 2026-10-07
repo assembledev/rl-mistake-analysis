@@ -1,0 +1,23 @@
+@startuml context
+!include <C4/C4_Context>
+LAYOUT_TOP_DOWN()
+skinparam backgroundColor #FFFFFF
+skinparam ranksep 55
+skinparam wrapWidth 240
+title System context — rl-mistake-analysis
+
+System(mistakes, "rl-mistake-analysis", "Candidate detection, shared features, model inference and training-data preparation", $type="Software system")
+System_Ext(supplier, "subtr-actor · upstream", "Gameplay event extraction and replay context", $type="Software system")
+System_Ext(consumer, "Replay-analysis application · downstream", "Visual replay review, mistake presentation, and label export", $type="Software system")
+System_Ext(recordings, "Ballchasing", "Hosts downloadable Rocket League recordings", $type="Software system")
+
+Rel_L(mistakes, supplier, "Extracts gameplay events and context")
+Rel_U(consumer, mistakes, "Gets candidates for visual review and predictions to display mistakes")
+Rel(consumer, mistakes, "Supplies reviewed incidents for training")
+Rel_D(mistakes, recordings, "Downloads original recordings for feature preparation")
+Lay_R(supplier, mistakes)
+Lay_D(supplier, recordings)
+Lay_D(mistakes, consumer)
+Lay_R(recordings, consumer)
+SHOW_LEGEND($details=None())
+@enduml

@@ -1,0 +1,27 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: Build, lint, and test
+        shell: nix develop --no-update-lock-file --command bash -e {0}
+        run: |
+          uv sync --locked
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked -- --test-threads=1
+          ruff check .
+          ruff format --check .
+          uv run --locked pytest

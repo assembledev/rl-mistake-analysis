@@ -1,0 +1,20 @@
+[package]
+name = "rl-mistake-analysis-inference"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+readme = "../../README.md"
+description = "Model inference for Rocket League mistake candidate features"
+include = ["src/**", "Cargo.toml"]
+
+[dependencies]
+rl-mistake-analysis-candidates = { version = "0.1.0", path = "../candidates" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ort.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

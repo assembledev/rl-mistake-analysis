@@ -1,0 +1,14 @@
+[package]
+name = "rl-mistake-analysis-candidates"
+version.workspace = true
+authors.workspace = true
+license-file = "../../LICENSE"
+readme = "../../README.md"
+edition.workspace = true
+rust-version.workspace = true
+description = "Rocket League mistake candidates and features from replay events"
+include = ["src/**", "Cargo.toml"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

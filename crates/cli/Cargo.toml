@@ -1,0 +1,24 @@
+[package]
+name = "rl-mistake-analysis-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+[dependencies]
+rl-mistake-analysis-candidates = { path = "../candidates" }
+rl-mistake-analysis-inference = { path = "../inference" }
+serde_json.workspace = true
+serde.workspace = true
+parquet = { version = "60", default-features = false, features = ["snap"] }
+tempfile = "3"
+subtr-actor.workspace = true
+boxcars.workspace = true
+sha2.workspace = true
+
+[build-dependencies]
+toml = "0.9"
+
+[[bin]]
+name = "rl-mistake-analysis"
+path = "src/main.rs"

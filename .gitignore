@@ -1,0 +1,10 @@
+/target/
+/.venv/
+/.direnv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+/artifacts/
+*.egg-info/
+/data/
+/models/

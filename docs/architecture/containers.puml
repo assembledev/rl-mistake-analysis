@@ -1,0 +1,33 @@
+@startuml containers
+!include <C4/C4_Container>
+LAYOUT_TOP_DOWN()
+skinparam backgroundColor #FFFFFF
+skinparam ranksep 15
+skinparam nodesep 85
+title Container view — rl-mistake-analysis standalone tools
+
+System_Ext(consumer, "Replay-analysis application · downstream", "Visual replay review, mistake presentation, and label export", $type="Software system")
+System_Ext(supplier, "subtr-actor · upstream", "Gameplay event extraction and replay context", $type="Software system")
+System_Ext(recordings, "Ballchasing", "Hosts downloadable Rocket League recordings", $type="Software system")
+
+System_Boundary(project, "rl-mistake-analysis") {
+    Container(cli, "Replay CLI", "Rust executable", "Runs candidate detection, feature extraction, labeled-table preparation, and inference")
+    Container(downloader, "Replay downloader", "Python executable", "Retrieves original recordings referenced by reviewed datasets")
+    ContainerDb(dataset, "Dataset files", "Local JSON, replay and Parquet files", "Reviewed incidents, original recordings and prepared feature tables")
+    ContainerDb(models, "Model files", "Local ONNX and JSON files", "Classifier graphs, evaluation reports and release catalog")
+}
+
+Rel_U(consumer, cli, "Gets candidates for visual review and predictions to display mistakes", "CLI / JSON")
+Rel_L(consumer, dataset, "Exports reviewed incidents for training", "JSON files")
+Rel_U(cli, supplier, "Extracts gameplay events from recordings", "Rust API")
+Rel_U(downloader, recordings, "Downloads referenced recordings", "HTTPS")
+Rel_D(cli, dataset, "Reads recordings and labels; writes feature tables", "Filesystem")
+Rel_D(cli, models, "Loads models for validation and offline predictions", "Filesystem")
+Rel_D(downloader, dataset, "Reads recording references; stores downloaded recordings", "Filesystem")
+Lay_R(cli, downloader)
+Lay_D(cli, models)
+Lay_D(downloader, dataset)
+Lay_R(supplier, recordings)
+Lay_R(dataset, consumer)
+SHOW_LEGEND($details=None())
+@enduml

@@ -1,0 +1,31 @@
+{
+  "name": "subtr-actor",
+  "schema_version": 1,
+  "status": "ok",
+  "revision": "synthetic-v1",
+  "replay_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "events": [
+    {
+      "meta": { "stream": "bump", "id": "bump:42" },
+      "payload": {
+        "kind": "bump",
+        "payload": {
+          "is_team_bump": true,
+          "initiator_is_team_0": true,
+          "victim_is_team_0": true,
+          "initiator": { "Steam": 1 },
+          "victim": { "Steam": 2 },
+          "frame": 42,
+          "time": 10.0,
+          "initiator_position": [0, 0, 17],
+          "victim_position": [20, 0, 17],
+          "confidence": 0.8,
+          "closing_speed": 900,
+          "victim_impulse": 600,
+          "contact_distance": 90,
+          "strength": 0.5
+        }
+      }
+    }
+  ]
+}
