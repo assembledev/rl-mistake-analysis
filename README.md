@@ -27,10 +27,10 @@ The container view shows a CLI integration. A downstream application invokes the
 
 ### Get unlabeled candidates
 
-In your Rust application's directory, add the candidate library from GitHub. Replace `REPOSITORY_URL` with this repository's GitHub clone URL:
+In your Rust application's directory, add the candidate library from GitHub:
 
 ```sh
-cargo add rl-mistake-analysis-candidates --git REPOSITORY_URL
+cargo add rl-mistake-analysis-candidates --git https://github.com/assembledev/rl-mistake-analysis.git
 ```
 
 Cargo fetches and builds the package, recording the source commit in your application's lockfile. Rust 1.92+ is required. You can select a release with `--tag RELEASE_TAG` or a commit with `--rev COMMIT`.
@@ -50,7 +50,7 @@ let candidates = MistakeKind::BumpingTeammate.candidates(&replay_events)?;
 Add the inference library to the same application:
 
 ```sh
-cargo add rl-mistake-analysis-inference --git REPOSITORY_URL
+cargo add rl-mistake-analysis-inference --git https://github.com/assembledev/rl-mistake-analysis.git
 ```
 
 Install CPU ONNX Runtime 1.24+. Before building, set `ORT_LIB_PATH` to its library directory and `ORT_PREFER_DYNAMIC_LINK=1`. The runtime library must also be available to the operating system's dynamic loader when executing inference.
@@ -71,7 +71,7 @@ Load once and reuse the session. Results contain probabilities, threshold decisi
 The CLI is an executable for offline work: extract events from a recording, inspect candidates, prepare training tables from reviews, or test a model. Install it with Cargo using the same ONNX Runtime setup as inference:
 
 ```sh
-cargo install --locked --git REPOSITORY_URL rl-mistake-analysis-cli
+cargo install --locked --git https://github.com/assembledev/rl-mistake-analysis.git rl-mistake-analysis-cli
 rl-mistake-analysis --help
 ```
 
