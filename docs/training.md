@@ -45,19 +45,22 @@ Model inputs are float32 values in contract order. Boolean measurements become `
 | `bumping_teammate` | `0.1.0` | XGBoost | 90 | None | 0.40 | [Recipe](../training/configs/bumping_teammate_0.1.0.json) |
 | `bang_with_time` | `0.1.0` | CatBoost | 103 | Square-root inverse frequency | 0.40 | [Recipe](../training/configs/bang_with_time_0.1.0.json) |
 | `bang_with_time` | `0.2.0` | Additive EBM | 142 | Square-root inverse frequency | 0.40 | [Recipe](../training/configs/bang_with_time_0.2.0.json) |
+| `bang_with_time` | `0.3.0` | Extra Trees | 141 | Square-root inverse frequency | 0.40 | [Recipe](../training/configs/bang_with_time_0.3.0.json) |
 
 Prepare a labeled table using the kind's guide and create a JSON array of replay checksums to reserve for testing. Every row from those replays stays out of training. Select the configuration for the intended release:
 
 ```sh
 python -m training.train_selected artifacts/bang_training.parquet \
-  data/held_out_replay_sha256.json artifacts/bang-0.2.0 \
-  --config training/configs/bang_with_time_0.2.0.json \
+  data/held_out_replay_sha256.json artifacts/bang-0.3.0 \
+  --config training/configs/bang_with_time_0.3.0.json \
   --source-revision YOUR_CODE_REVISION
 ```
 
-The default configuration is teammate bump `0.1.0`. Each recipe selects its exact input order from the extracted feature catalog and requires matching frame selection settings. Bang class weights use only training labels: take the square root of inverse class frequency, then normalize the mean training-row weight to one.
+The default configuration is teammate bump `0.1.0`. Each recipe selects its exact input order from the extracted feature catalog and requires matching frame selection settings. Bang `0.3.0` records `bang_with_time.candidates.v2`, using data prepared with the following-opponent rule and excluding fifties at both contacts. Bang class weights use only training labels: take the square root of inverse class frequency, then normalize the mean training-row weight to one.
 
 Use a new output directory for each run. It retains the recipe, native fitted model, split indices, labels, probabilities, evaluation report, and package versions. The ONNX model and report are stored under `models/<kind>/<version>/`, with a root model catalog. EBM reports also retain the fitted intercept, numeric cuts, and term scores.
+
+Extra Trees learns median imputation and missing-value indicators from training rows. Its ONNX graph includes that preprocessing. The evaluation report records the fitted medians, indicator columns and tree count.
 
 The original reviewed datasets are not distributed. Reproducing released models requires the original feature values, labels, row order, held-out replays, and training environment. Training with your own data produces a new fitted model. Release comparisons and evaluation results are available in the [model repository](https://huggingface.co/alina-afanaseva/rl-mistake-analysis-models).
 
@@ -126,6 +129,6 @@ Average precision is the default selection criterion because it measures mistake
 
 ## Release models
 
-Code and models have independent versions. One `manifest.json` catalog can list several releases of each mistake kind. Each entry describes its feature contract, threshold, evaluation report, and artifact checksums.
+Code and models have independent versions. One `manifest.json` catalog can list several releases of each mistake kind. Each entry describes its candidate and feature contracts, threshold, evaluation report, and artifact checksums.
 
 `training.export.model_entry` generates metadata from an exported ONNX model, a prepared table, and an evaluation report. `training.export.write_manifest` writes the catalog. Publish the catalog and artifacts to a Hugging Face model repository; consumers download the files for selected releases.

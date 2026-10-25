@@ -18,7 +18,9 @@ from training.train_selected import CONFIG, train
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("version, width", [("0.1.0", 103), ("0.2.0", 142)])
+@pytest.mark.parametrize(
+    "version, width", [("0.1.0", 103), ("0.2.0", 142), ("0.3.0", 141)]
+)
 def test_selected_bang_release_matches_native_and_cli_probabilities(
     engine, combined_analysis, tmp_path, version, width
 ):
@@ -59,7 +61,14 @@ def test_selected_bang_release_matches_native_and_cli_probabilities(
     native = (
         CatBoostClassifier().load_model(output / "catboost.cbm")
         if settings["model"] == "catboost"
-        else joblib.load(output / "ebm.joblib")
+        else joblib.load(
+            output
+            / (
+                "extra_trees.joblib"
+                if settings["model"] == "extra_trees"
+                else "ebm.joblib"
+            )
+        )
     )
     saved = np.load(output / "predictions.npz")
     np.testing.assert_array_equal(saved["labels"], labels)
@@ -78,6 +87,10 @@ def test_selected_bang_release_matches_native_and_cli_probabilities(
     assert report["onnx_validation"]["rows"] == len(labels)
     assert report["onnx_validation"]["features"] == width
     assert json.loads((output / "recipe.json").read_text()) == settings
+    if "candidate_schema" in settings:
+        manifest = json.loads((output / "manifest.json").read_text())
+        assert manifest["models"][0]["candidate_schema"] == settings["candidate_schema"]
+        assert report["candidate_schema"] == settings["candidate_schema"]
     if settings["model"] == "additive_ebm":
         fitted = report["fitted_parameters"]
         np.testing.assert_array_equal(fitted["intercept"], native.intercept_)

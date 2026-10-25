@@ -2,6 +2,7 @@
 
 mod exchange;
 mod schema;
+mod touch_context;
 
 pub use crate::feature_input::ReplayAnalysis;
 pub use crate::feature_values::Measurement;
@@ -39,6 +40,8 @@ pub struct Samples {
     pub before_frame: Option<usize>,
     pub outgoing_sample_frame: Option<usize>,
     pub closest_opponent_id: Option<Value>,
+    pub closest_opponent_at_candidate_id: Option<Value>,
+    pub first_touch_opponent_id: Option<Value>,
     pub previous_touch: Option<TouchStage>,
     pub first_touch: Option<TouchStage>,
     pub second_touch: Option<TouchStage>,
@@ -194,14 +197,18 @@ struct OpponentSample<'a> {
     distance: f64,
 }
 
-fn surrounding_features(
-    context: &Context<'_>,
+struct Surroundings<'a> {
+    approaching: [Option<u32>; 2],
+    closest_opponent: Option<OpponentSample<'a>>,
+}
+
+fn surrounding_players<'a>(
+    context: &Context<'a>,
     roster: &HashMap<String, bool>,
     subject: &Value,
     team: bool,
     frame: Option<usize>,
-    values: &mut Values,
-) -> Result<Option<Value>, String> {
+) -> Result<Surroundings<'a>, String> {
     let frames = &context.analysis.outputs.replay_data.frame_data;
     let observation = frame.zip(context.ball(frame));
     let mut counts = [observation.map(|_| 0u32); 2];
@@ -264,7 +271,26 @@ fn surrounding_features(
             nearest = None;
         }
     }
-    for (role, count) in ["teammate", "opponent"].into_iter().zip(counts) {
+    Ok(Surroundings {
+        approaching: counts,
+        closest_opponent: nearest,
+    })
+}
+
+fn surrounding_features(
+    context: &Context<'_>,
+    roster: &HashMap<String, bool>,
+    subject: &Value,
+    team: bool,
+    frame: Option<usize>,
+    values: &mut Values,
+) -> Result<Option<Value>, String> {
+    let Surroundings {
+        approaching,
+        closest_opponent: nearest,
+    } = surrounding_players(context, roster, subject, team, frame)?;
+    let observation = frame.zip(context.ball(frame));
+    for (role, count) in ["teammate", "opponent"].into_iter().zip(approaching) {
         values.0.insert(
             format!("approaching_{role}_count"),
             count.map(Measurement::Count),
@@ -453,6 +479,8 @@ impl<'a> ReplayContext<'a> {
             before_frame: before,
             outgoing_sample_frame: Some(frame),
             closest_opponent_id: None,
+            closest_opponent_at_candidate_id: None,
+            first_touch_opponent_id: None,
             previous_touch: stage(previous)?,
             first_touch: stage(first)?,
             second_touch: stage(second)?,
@@ -474,6 +502,7 @@ impl<'a> ReplayContext<'a> {
         context.goal_features(time, play_end, team, &mut values)?;
         subject_followup_features(context, touch, &samples, &mut values)?;
         exchange::features(self, touch, &samples, &mut values)?;
+        touch_context::features(self, touch, &mut samples, first, &mut values)?;
         values.validate(definitions)?;
         Ok(FeatureRow {
             source_event_id: touch.meta.id.clone(),
@@ -708,6 +737,8 @@ pub fn extract(
             "player_activity",
             "movement",
             "field_half",
+            "field_third",
+            "shadow_defense",
             "ball_depth",
             "depth_role",
         ],

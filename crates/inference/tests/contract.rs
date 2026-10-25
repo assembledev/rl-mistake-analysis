@@ -55,6 +55,7 @@ fn manifest(fixture: &str) -> (TempDir, Manifest) {
             kind: kind.name().into(),
             version: "1.0.0".into(),
             input_schema: kind.schema().into(),
+            candidate_schema: None,
             feature_names: kind
                 .feature_names()
                 .iter()

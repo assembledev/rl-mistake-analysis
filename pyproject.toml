@@ -1,6 +1,6 @@
 [project]
 name = "rl-mistake-analysis"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.12"
 dependencies = ["numpy>=2,<3", "pyarrow>=21", "onnx>=1.18,<2"]
 
@@ -15,6 +15,7 @@ training = [
   "onnxruntime>=1.24,<2",
   "xgboost==3.4.1",
   "onnxmltools>=1.16,<2",
+  "skl2onnx>=1.20,<2",
 ]
 tracking = ["mlflow>=3.11,<4", "pip>=25,<27"]
 

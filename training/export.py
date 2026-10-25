@@ -54,6 +54,7 @@ def model_entry(
     status,
     feature_names=None,
     input_schema=None,
+    candidate_schema=None,
 ):
     table, contract = load(training_table)
     if feature_names is not None or input_schema is not None:
@@ -67,6 +68,10 @@ def model_entry(
         or not math.isfinite(keep_threshold)
         or not 0 <= keep_threshold <= 1
         or status not in ("experimental", "approved")
+        or (
+            candidate_schema is not None
+            and (not isinstance(candidate_schema, str) or not candidate_schema.strip())
+        )
     ):
         raise ValueError("Invalid model release identity, threshold, or status")
     model_artifact = artifact(directory, model_file)
@@ -110,6 +115,8 @@ def model_entry(
         },
         "files": files,
     }
+    if candidate_schema is not None:
+        entry["candidate_schema"] = candidate_schema
     if any(
         reader.supports_schema(contract["input_schema"])
         for reader in (bump_dataset, bang_dataset)

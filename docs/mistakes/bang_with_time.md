@@ -9,13 +9,15 @@ target/debug/rl-mistake-analysis candidates bang_with_time < analysis.json > can
 target/debug/rl-mistake-analysis contract bang_with_time
 ```
 
-Candidates come from SubtrActor's ball-touch events, ordered by frame and touch ID. Group consecutive touches by one player when they fall within one recorded period of that player's possession. Their team must have possession throughout, with play active. Keep the last touch in each group.
+Candidates come from SubtrActor's original ball-touch timeline, ordered by frame and touch ID. Keep a touch when the next distinct contact frame includes an opponent. A following touch by only the same player or teammates does not qualify. Lookahead stops at the play's goal or next kickoff; a touch with no later contact in that play is excluded.
 
-A touch by another player, several players touching in one frame, a contested touch, or a fifty between touches ends the group. A gap or change in possession also ends it. Remove touches tagged `contested=contested` and touches on the frames recorded as either team's first touch in a fifty.
+Exclude the candidate when its own touch or any touch at the next contact frame is tagged `contested=contested` or falls within a native fifty's `start_frame` through `resolve_frame`, inclusive. A bang followed by a fifty is therefore excluded too. Keep all contacts in the timeline used for lookahead; an excluded next contact does not permit selecting a later opponent touch. Simultaneous touchers at the next frame are considered together.
 
-For example, continuous possession across touches at frames 10, 20, and 30 keeps frame 30. A fifty at frame 20 leaves frames 10 and 30 as candidates.
+For example, a player's touches at frames 10 and 11 followed by an opponent at frame 20 keep only frame 11. A teammate's touch between frame 11 and the opponent instead makes that teammate's touch the candidate. Recorded player-possession intervals are not required.
 
-Each candidate is identified by the replay checksum, frame, touch ID, and player: `(replay_sha256, frame, touch_id, player_id)`. The output uses schema `bang_with_time.candidates.v1` and keeps the original touch in `evidence`, including its `touch_id`, along with the source event ID, time, and supplier revision.
+Each candidate is identified by the replay checksum, frame, touch ID, and player: `(replay_sha256, frame, touch_id, player_id)`. The output uses schema `bang_with_time.candidates.v2` and keeps the original touch in `evidence`, including its `touch_id`, along with the source event ID, time, and supplier revision.
+
+Candidate contract v2 requires the following opponent contact and excludes fifties at both contacts. It is independent of the numeric feature schema `bang_with_time.context.v1`. Model metadata can record the candidate contract alongside the numeric feature schema.
 
 ## Annotations
 
@@ -30,7 +32,7 @@ The join matches replay checksum, frame, touch ID, player ID, and replay timesta
 
 ## Context extraction
 
-`bang_with_time.context.v1` contains 146 typed measurements per selected touch. Extraction uses a combined `events,replay_data` analysis. `--player PLAYER_ID_JSON` selects one judged player; the full selection contains every candidate's feature row.
+`bang_with_time.context.v1` contains 163 typed measurements per selected touch. Extraction uses a combined `events,replay_data` analysis. `--player PLAYER_ID_JSON` selects one judged player; the full selection contains every candidate's feature row.
 
 ```sh
 target/debug/rl-mistake-analysis bang-features examples/bang_sampling.json < analysis.json > features.json
@@ -40,7 +42,7 @@ python -m training.bang_features data/analyses features.parquet \
   --sampling examples/bang_sampling.json
 ```
 
-Each row carries its exact touch key, timestamp, source event, sample references, and typed measurements. `samples.closest_opponent_id` identifies the player used for the opponent profile. The Parquet builder stores the shared feature contract and extraction provenance described in the [format guide](../formats.md#feature-and-training-tables).
+Each row carries its exact touch key, timestamp, source event, sample references, and typed measurements. `samples.closest_opponent_id` identifies the opponent sampled before contact; `samples.closest_opponent_at_candidate_id` identifies the closest opponent at contact. `samples.first_touch_opponent_id` identifies the unique opponent at the following contact, or is null when multiple opponents touch simultaneously. The Parquet builder stores the shared feature contract and extraction provenance described in the [format guide](../formats.md#feature-and-training-tables).
 
 ## Frame selection
 
@@ -59,6 +61,8 @@ Ball positions and outgoing speed use the shared contact frame. Incoming speed u
 Team axes place the arena center at the origin. `toward` points toward the opposing goal, `side` is the perpendicular ground axis, and `up` is world height. Both ground axes rotate with the judged player's team. Distances and speeds use full 3D native coordinates; headings use normalized car quaternions.
 
 Surrounding-player measurements use the preceding frame and native tracked-activity spans. Approaching counts include tracked teammates other than the subject and tracked opponents. The opponent profile selects the smallest 3D car-to-ball distance, with lexicographically smallest serialized player ID resolving ties. Its position, heading, velocity, and boost refer to that selected player and frame.
+
+The closest-opponent speed at the candidate uses the contact frame and the same distance and activity rules. The following opponent's orientation uses that opponent's contact frame. Its forward and up vectors preserve heading, pitch and roll in team axes; simultaneous contacts by different opponents leave these vectors unavailable.
 
 Unavailable stages, bodies, states, or required velocities produce nullable measurements. Unknown opponent activity or an unavailable tracked opponent body makes its team's count and the closest-opponent profile unavailable. Known tracked teams have a count of the cars meeting the approach condition, including zero. Numeric observations must be finite and representable as float32.
 
@@ -145,6 +149,23 @@ Unavailable stages, bodies, states, or required velocities produce nullable meas
 | `exchange_possession_own_team_s` | nullable float32 | Sum of native own_team possession-span durations clipped to the interval from touch 0 through touch 2. | `events.possession` |
 | `exchange_possession_opponent_s` | nullable float32 | Sum of native opponent possession-span durations clipped to the interval from touch 0 through touch 2. | `events.possession` |
 | `exchange_possession_neutral_s` | nullable float32 | Sum of native neutral possession-span durations clipped to the interval from touch 0 through touch 2. | `events.possession` |
+| `subject_consecutive_touches_before_candidate` | uint32 | Count distinct native subject touch IDs in the consecutive run immediately before the candidate. Stop at another player's contact or the observed play start; exclude the candidate itself. | `events.touch` |
+| `previous_opponent_touch_delay_s` | nullable float32 | Candidate time minus the latest earlier opponent contact in the same observed play. Unavailable when no earlier opponent contact was observed. | `events.touch` |
+| `next_opponent_possession_duration_s` | nullable float32 | Full active native opponent-possession span containing the first later contact, including its portion before the candidate, clipped to observed play boundaries. An observed own-team or neutral span gives zero; an unobserved span gives null. Span starts are inclusive and ends exclusive, except at the terminal play boundary. | `events.possession` |
+| `subject_height_at_candidate` | nullable float32 | Judged player's native car-center height at the candidate contact frame. | `replay_data.frame_data.players.rigid_body.location` |
+| `closest_opponent_speed_at_candidate` | nullable float32 | Length of the closest tracked opponent's native 3D velocity at the candidate contact frame. | `events.replay_meta`, `events.player_activity`, `replay_data.frame_data` |
+| `subject_field_third_at_candidate_defensive` | nullable bool | Judged player occupies the native defensive third at candidate time. An observed neutral third sets both third indicators false. | `events.field_third` |
+| `subject_field_third_at_candidate_offensive` | nullable bool | Judged player occupies the native offensive third at candidate time. | `events.field_third` |
+| `subject_shadow_defense_at_candidate` | nullable bool | Native shadow-defense span covers candidate time for the observed judged player. | `events.shadow_defense`, `events.player_activity`, `replay_data.frame_data` |
+| `own_team_shadow_defense_at_candidate` | nullable bool | At least one own-team player has a native shadow-defense span covering candidate time. Requires observed activity and tracked bodies for every active own-team player; demolished players count as false. | `events.shadow_defense`, `events.player_activity`, `replay_data.frame_data` |
+| `candidate_surface_air` | nullable bool | Native candidate surface tag is air. An observed ground tag sets both surface indicators false. | `events.touch.tags.surface` |
+| `candidate_surface_wall` | nullable bool | Native candidate surface tag is wall. A missing surface tag leaves both indicators null. | `events.touch.tags.surface` |
+| `first_touch_opponent_heading_toward` | nullable float32 | Following opponent's forward unit vector along the subject team's toward axis at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
+| `first_touch_opponent_heading_side` | nullable float32 | Following opponent's forward unit vector along the subject team's side axis at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
+| `first_touch_opponent_heading_up` | nullable float32 | Following opponent's forward unit vector along world up at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
+| `first_touch_opponent_up_toward` | nullable float32 | Following opponent's up unit vector along the subject team's toward axis at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
+| `first_touch_opponent_up_side` | nullable float32 | Following opponent's up unit vector along the subject team's side axis at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
+| `first_touch_opponent_up_up` | nullable float32 | Following opponent's up unit vector along world up at that contact frame. | `events.touch`, `replay_data.frame_data.players.rigid_body.rotation` |
 
 Interval aggregates require their endpoints and the relevant observations throughout the interval. A missing ball frame makes trajectory and goal-distance aggregates unavailable; an unknown activity state or missing tracked car makes that team's distance aggregate unavailable. Demolished players are excluded. A team-distance minimum is unavailable when no frame has a tracked car for that team. Possession durations are unavailable when native spans leave an unobserved gap; gaps are not counted as neutral possession.
 
@@ -156,7 +177,7 @@ Goal openings use SubtrActor's standard Soccar dimensions and collision ball rad
 
 ### Feature selection
 
-Models declare an ordered subset of the 146 known measurements in their manifest. The base schema is `bang_with_time.context.v1`; named selections use `bang_with_time.context.v1.NAME.v1`. Feature selection and numeric conversion use the [shared training API](../training.md#dataset-inputs).
+Models declare an ordered subset of the 163 known measurements in their manifest. The base schema is `bang_with_time.context.v1`; named selections use `bang_with_time.context.v1.NAME.v1`. Feature selection and numeric conversion use the [shared training API](../training.md#dataset-inputs).
 
 ### Scoring
 

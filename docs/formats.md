@@ -141,6 +141,7 @@ ONNX contains the classifier's operations, learned parameters, and exported prep
 | `kind` | Mistake kind |
 | `version` | Model release version |
 | `input_schema` | Required feature contract identifier |
+| `candidate_schema` | Candidate-selection contract used for training, when declared |
 | `feature_names` | Required feature names in model input order |
 | `sampling` | Settings for selecting measurement frames |
 | `runtime` | `onnx` |
@@ -152,6 +153,8 @@ ONNX contains the classifier's operations, learned parameters, and exported prep
 | `files` | Required artifacts, each with `path` and integrity checksum `sha256` |
 
 Several releases can coexist. Each must declare its graph, evaluation report, and any external weight files. Consumers download the selected release's files; checksums verify them. Feature compatibility depends on the contract. Context models may select any nonempty subset of known features in their declared `feature_names` order. Adding measurements to the extractor preserves existing selections. Change the base contract version for incompatible changes to feature meaning or units. See [context measurements](#context-measurements) for named selections.
+
+Candidate and feature contracts are independent. `candidate_schema` records which incidents qualified for training; `input_schema` identifies their measurements. Inference validates the feature schema, ordered inputs and sampling settings. Catalog schema version 1 includes candidate metadata; consumers must use a library version that understands it.
 
 The ONNX interface accepts one float32 table `[N, F]` and returns probabilities `[N, 1]`: `N` incidents, `F` ordered features, one probability in `[0, 1]` per incident. The incident count is dynamic. Model selection and release preparation are described in the [training guide](training.md).
 

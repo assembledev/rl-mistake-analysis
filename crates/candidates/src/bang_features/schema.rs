@@ -276,5 +276,59 @@ pub fn definitions() -> Vec<FeatureDefinition> {
             "events.possession",
         );
     }
+    for (name, source) in [
+        ("previous_opponent_touch_delay_s", "events.touch"),
+        ("next_opponent_possession_duration_s", "events.possession"),
+        (
+            "subject_height_at_candidate",
+            "replay_data.frame_data.players.rigid_body.location",
+        ),
+        (
+            "closest_opponent_speed_at_candidate",
+            "events.replay_meta,events.player_activity,replay_data.frame_data",
+        ),
+    ] {
+        add(name.into(), F32, true, source);
+    }
+    add(
+        "subject_consecutive_touches_before_candidate".into(),
+        U32,
+        false,
+        "events.touch",
+    );
+    for state in ["defensive", "offensive"] {
+        add(
+            format!("subject_field_third_at_candidate_{state}"),
+            Boolean,
+            true,
+            "events.field_third",
+        );
+    }
+    for subject in ["subject", "own_team"] {
+        add(
+            format!("{subject}_shadow_defense_at_candidate"),
+            Boolean,
+            true,
+            "events.shadow_defense,events.player_activity,replay_data.frame_data",
+        );
+    }
+    for surface in ["air", "wall"] {
+        add(
+            format!("candidate_surface_{surface}"),
+            Boolean,
+            true,
+            "events.touch.tags.surface",
+        );
+    }
+    for direction in ["heading", "up"] {
+        for axis in ["toward", "side", "up"] {
+            add(
+                format!("first_touch_opponent_{direction}_{axis}"),
+                F32,
+                true,
+                "events.touch,replay_data.frame_data.players.rigid_body.rotation",
+            );
+        }
+    }
     result
 }

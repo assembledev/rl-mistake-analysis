@@ -4,35 +4,20 @@ use serde_json::{Value, json};
 fn event(stream: &str, id: &str, payload: Value) -> Value {
     json!({"meta":{"stream":stream,"id":id},"payload":{"kind":stream,"payload":payload}})
 }
-fn touch(id: u64, frame: u64, player: &str) -> Value {
+fn touch(id: u64, frame: u64, player: &str, team_zero: bool) -> Value {
     event(
         "touch",
         &format!("touch:{id}"),
         json!({"touch_id":id,"frame":frame,
-        "time":frame as f64/30.0,"player":{"Epic":player},"is_team_0":true,"tags":[]}),
-    )
-}
-fn episode(start: u64, end: u64) -> Value {
-    event(
-        "player_possession",
-        &format!("episode:{start}"),
-        json!({
-        "player_id":{"Epic":"a"},"start_frame":start,"end_frame":end}),
-    )
-}
-fn ownership(id: &str, start: u64, end: u64, state: &str, active: bool) -> Value {
-    event(
-        "possession",
-        id,
-        json!({"frame":start,"end_frame":end,"possession_state":state,"active":active}),
+        "time":frame as f64/30.0,"player":{"Epic":player},"is_team_0":team_zero,"tags":[]}),
     )
 }
 fn fifty(start: u64, end: u64, first: u64, second: u64) -> Value {
     event(
         "fifty_fifty",
-        "fifty",
-        json!({"start_frame":start,"resolve_frame":end,
-        "team_zero_touch_frame":first,"team_one_touch_frame":second}),
+        &format!("fifty:{start}"),
+        json!({"start_frame":start,
+        "resolve_frame":end,"team_zero_touch_frame":first,"team_one_touch_frame":second}),
     )
 }
 fn facts(events: Vec<Value>) -> ReplayFacts {
@@ -48,213 +33,196 @@ fn kept(events: Vec<Value>) -> Vec<u64> {
         .unwrap()
         .candidates
         .iter()
-        .map(|c| c.frame)
+        .map(|candidate| candidate.frame)
         .collect()
 }
 
 #[test]
-fn keeps_last_touch_within_each_recorded_player_possession() {
-    let selection = MistakeKind::BangWithTime
-        .candidates(&facts(vec![
-            touch(2, 30, "a"),
-            touch(0, 10, "a"),
-            touch(1, 20, "a"),
-            episode(9, 20),
-            ownership("owned", 0, 40, "team_zero", true),
-        ]))
-        .unwrap();
+fn keeps_only_touches_immediately_before_the_opposing_team() {
     assert_eq!(
-        selection
-            .candidates
-            .iter()
-            .map(|c| c.frame)
-            .collect::<Vec<_>>(),
-        vec![20, 30]
+        kept(vec![
+            touch(6, 60, "b", true),
+            touch(2, 20, "b", true),
+            touch(0, 10, "a", true),
+            touch(5, 50, "a", true),
+            touch(3, 30, "c", false),
+            touch(1, 11, "a", true),
+            touch(4, 40, "d", false)
+        ]),
+        vec![20, 40]
     );
 }
 
 #[test]
-fn neutral_inactive_and_other_team_intervals_keep_the_launch_before_recovery() {
-    for (state, active) in [("neutral", true), ("team_zero", false), ("team_one", true)] {
+fn immediate_same_player_contacts_do_not_require_a_possession_episode() {
+    for (first, continuation, opponent) in [(2950, 2951, 3010), (10704, 10706, 10817)] {
+        let mut next = touch(1, continuation, "a", true);
+        next["payload"]["payload"]["tags"] = json!([{"group":"reception","value":"continuation"}]);
         assert_eq!(
             kept(vec![
-                touch(0, 10, "a"),
-                touch(1, 20, "a"),
-                episode(0, 30),
-                ownership("before", 0, 12, "team_zero", true),
-                ownership("break", 12, 18, state, active),
-                ownership("after", 18, 30, "team_zero", true)
+                touch(0, first, "a", true),
+                next,
+                touch(2, opponent, "b", false)
             ]),
-            vec![10, 20]
+            vec![continuation]
         );
     }
 }
 
 #[test]
-fn keeps_touches_separate_across_gaps_in_recorded_possession() {
-    let selection = MistakeKind::BangWithTime
-        .candidates(&facts(vec![
-            touch(0, 10, "a"),
-            touch(1, 20, "a"),
-            episode(0, 30),
-            ownership("before", 0, 12, "team_zero", true),
-            ownership("after", 18, 30, "team_zero", true),
-        ]))
-        .unwrap();
-    assert_eq!(selection.candidates.len(), 2);
-
+fn excludes_every_touch_in_a_fifty_including_its_resolving_frame() {
     assert_eq!(
         kept(vec![
-            touch(0, 10, "a"),
-            touch(1, 20, "a"),
-            episode(0, 15),
-            episode(18, 30),
-            ownership("owned", 0, 30, "team_zero", true)
+            touch(0, 5, "a", true),
+            touch(1, 10, "b", false),
+            touch(2, 11, "a", true),
+            touch(3, 12, "b", false),
+            touch(4, 15, "a", true),
+            touch(5, 20, "b", false),
+            touch(6, 21, "a", true),
+            fifty(10, 15, 11, 10)
         ]),
-        vec![10, 20]
+        vec![20]
     );
 }
 
 #[test]
-fn another_player_and_ambiguous_contact_frames_break_the_original_sequence() {
+fn a_clean_touch_followed_by_an_opponent_fifty_is_excluded() {
     assert_eq!(
         kept(vec![
-            touch(0, 10, "a"),
-            touch(1, 15, "b"),
-            touch(2, 20, "a"),
-            touch(3, 30, "a"),
-            touch(4, 30, "b"),
-            episode(0, 40),
-            ownership("owned", 0, 40, "team_zero", true)
+            touch(0, 10, "a", true),
+            touch(1, 20, "b", false),
+            touch(2, 21, "c", true),
+            touch(3, 25, "b", false),
+            touch(4, 35, "a", true),
+            touch(5, 45, "b", false),
+            fifty(20, 25, 21, 20)
         ]),
-        vec![10, 15, 20, 30, 30]
+        vec![35]
     );
 }
 
 #[test]
-fn repeated_contacts_on_one_frame_only_break_groups_when_players_differ() {
-    let events = vec![
-        touch(0, 10, "a"),
-        touch(1, 20, "a"),
-        touch(2, 20, "a"),
-        touch(3, 30, "a"),
-        episode(0, 40),
-        ownership("owned", 0, 40, "team_zero", true),
-    ];
-    assert_eq!(kept(events.clone()), vec![30]);
-
-    let mut ambiguous = events;
-    ambiguous.push(touch(4, 20, "b"));
-    assert_eq!(kept(ambiguous), vec![10, 20, 20, 20, 30]);
+fn excluded_touches_are_not_skipped_when_finding_the_next_contact() {
+    for excluded_by_fifty in [false, true] {
+        let mut next = touch(1, 20, "b", true);
+        next["payload"]["payload"]["tags"] = json!([{"group":"contested","value":"contested"}]);
+        let mut events = vec![
+            touch(0, 10, "a", true),
+            next,
+            touch(2, 30, "c", false),
+            touch(3, 40, "a", true),
+        ];
+        if excluded_by_fifty {
+            events.push(fifty(20, 22, 20, 21));
+        }
+        assert_eq!(kept(events), vec![30]);
+    }
 }
 
 #[test]
-fn fifties_remain_boundaries_before_final_filtering() {
+fn simultaneous_next_contacts_are_read_as_one_native_stage() {
+    let mut teammate = touch(1, 20, "b", true);
+    let mut opponent = touch(2, 20, "c", false);
+    for contact in [&mut teammate, &mut opponent] {
+        contact["payload"]["payload"]["tags"] = json!([{"group":"contested","value":"contested"}]);
+    }
     assert_eq!(
         kept(vec![
-            touch(0, 10, "a"),
-            touch(1, 20, "a"),
-            touch(2, 30, "a"),
-            episode(0, 40),
-            ownership("owned", 0, 40, "team_zero", true),
-            fifty(20, 22, 20, 21)
+            touch(0, 10, "a", true),
+            teammate,
+            opponent,
+            touch(3, 30, "a", true),
+            touch(4, 40, "c", false),
         ]),
-        vec![10, 30]
+        vec![30]
     );
-    let selection = MistakeKind::BangWithTime
-        .candidates(&facts(vec![
-            touch(0, 10, "a"),
-            touch(1, 30, "a"),
-            episode(0, 40),
-            ownership("owned", 0, 40, "team_zero", true),
-            fifty(15, 25, 15, 16),
-        ]))
-        .unwrap();
-    assert_eq!(selection.candidates.len(), 2);
+    assert!(kept(vec![touch(0, 10, "a", true), touch(1, 10, "c", false)]).is_empty());
 }
 
 #[test]
-fn contested_tags_and_exact_initial_fifty_frames_are_filtered_without_expansion() {
-    let mut tagged = touch(3, 40, "a");
-    tagged["payload"]["payload"]["tags"] = json!([{"group":"contested","value":"contested"}]);
+fn goals_and_kickoffs_prevent_lookahead_into_another_play() {
+    for boundary in [
+        event("goal_context", "goal", json!({"time":20.0/30.0})),
+        event("kickoff", "kickoff", json!({"start_time":20.0/30.0})),
+    ] {
+        assert_eq!(
+            kept(vec![
+                touch(0, 10, "a", true),
+                touch(1, 30, "b", false),
+                touch(2, 40, "a", true),
+                boundary
+            ]),
+            vec![30]
+        );
+    }
     assert_eq!(
         kept(vec![
-            touch(0, 10, "a"),
-            touch(1, 10, "c"),
-            touch(2, 11, "b"),
-            tagged,
-            fifty(10, 15, 10, 12)
+            touch(0, 10, "a", true),
+            touch(1, 20, "b", false),
+            touch(2, 30, "a", true),
+            event("goal_context", "goal", json!({"time":20.0/30.0}))
         ]),
-        vec![11]
+        vec![10]
     );
 }
 
 #[test]
-fn keeps_touches_separate_when_player_possession_is_unrecorded() {
+fn kickoff_starting_at_the_next_contact_belongs_to_the_next_play() {
     assert_eq!(
         kept(vec![
-            touch(0, 10, "a"),
-            touch(1, 20, "a"),
-            ownership("owned", 0, 30, "team_zero", true)
+            touch(0, 10, "a", true),
+            touch(1, 30, "b", false),
+            touch(2, 40, "a", true),
+            event("kickoff", "kickoff", json!({"start_time":1.0}))
         ]),
-        vec![10, 20]
+        vec![30]
     );
 }
 
 #[test]
-fn malformed_native_events_fail_explicitly() {
+fn malformed_native_selection_inputs_fail_explicitly() {
+    for events in [
+        vec![touch(0, 10, "a", true), touch(0, 20, "b", false)],
+        vec![fifty(20, 10, 10, 11)],
+    ] {
+        assert!(
+            MistakeKind::BangWithTime
+                .candidates(&facts(events))
+                .is_err()
+        );
+    }
+    let mut invalid = touch(0, 10, "a", true);
+    invalid["payload"]["kind"] = json!("fifty_fifty");
     assert!(
         MistakeKind::BangWithTime
-            .candidates(&facts(vec![touch(0, 10, "a"), touch(0, 20, "a")]))
-            .is_err()
-    );
-    assert!(
-        MistakeKind::BangWithTime
-            .candidates(&facts(vec![episode(20, 10)]))
-            .is_err()
-    );
-    assert!(
-        MistakeKind::BangWithTime
-            .candidates(&facts(vec![
-                ownership("a", 10, 20, "team_zero", true),
-                ownership("b", 15, 25, "team_zero", true)
-            ]))
-            .is_err()
-    );
-    assert!(
-        MistakeKind::BangWithTime
-            .candidates(&facts(vec![ownership("a", 10, 20, "unknown", true)]))
-            .is_err()
-    );
-    assert!(
-        MistakeKind::BangWithTime
-            .candidates(&facts(vec![fifty(20, 10, 10, 11)]))
+            .candidates(&facts(vec![invalid]))
             .is_err()
     );
 }
 
 #[test]
-fn terminal_annotation_and_batch_preserve_exact_native_anchor() {
-    let mut terminal = touch(7, 42, "a");
+fn annotations_and_batches_preserve_the_exact_selected_native_touch() {
+    let mut selected = touch(7, 42, "a", true);
     let time = 13.065633773803711;
-    terminal["payload"]["payload"]["time"] = json!(time);
-    let replay = facts(vec![
-        touch(6, 41, "a"),
-        terminal.clone(),
-        episode(40, 43),
-        ownership("owned", 40, 43, "team_zero", true),
-    ]);
-    let batch = MistakeKind::BangWithTime.candidates(&replay).unwrap();
+    selected["payload"]["payload"]["time"] = json!(time);
+    let mut opponent = touch(8, 50, "b", false);
+    opponent["payload"]["payload"]["time"] = json!(14.0);
+    let batch = MistakeKind::BangWithTime
+        .candidates(&facts(vec![selected.clone(), opponent]))
+        .unwrap();
     batch.validate().unwrap();
     assert!(batch.feature_names.is_empty());
-    let c = &batch.candidates[0];
-    assert_eq!(c.raw_time, time);
-    assert_eq!(c.source_event_ids, vec!["touch:7"]);
-    assert_eq!(c.evidence, terminal["payload"]["payload"]);
-    let mut annotation:Annotation=serde_json::from_value(json!({"kind":"bang_with_time",
-        "replay_sha256":batch.replay_sha256,"frame":42,"touch_id":7,"raw_time":c.raw_time,
-        "player_id":c.player_id,"evidence":c.evidence,"label":1,"engine_revision":"reviewed-supplier",
-        "source_event_ids":c.source_event_ids})).unwrap();
+    assert_eq!(batch.candidates.len(), 1);
+    let candidate = &batch.candidates[0];
+    assert_eq!(candidate.raw_time, time);
+    assert_eq!(candidate.source_event_ids, vec!["touch:7"]);
+    assert_eq!(candidate.evidence, selected["payload"]["payload"]);
+    let mut annotation: Annotation = serde_json::from_value(json!({"kind":"bang_with_time",
+        "replay_sha256":batch.replay_sha256,"frame":42,"touch_id":7,"raw_time":candidate.raw_time,
+        "player_id":candidate.player_id,"evidence":candidate.evidence,"label":1,
+        "engine_revision":"reviewed-supplier","source_event_ids":candidate.source_event_ids}))
+    .unwrap();
     annotation.validate().unwrap();
     annotation.incident =
         serde_json::from_value(json!({"kind":"bang_with_time","frame":43,"touch_id":7})).unwrap();

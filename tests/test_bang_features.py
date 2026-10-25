@@ -40,17 +40,42 @@ def test_real_replay_preserves_native_candidate_identity_and_complete_contract(
             check=True,
         ).stdout
     )
-    assert len(batch["rows"]) == len(selection[0]["candidates"]) == 108
-    assert len(batch["feature_definitions"]) == 146
+    assert len(batch["rows"]) == len(selection[0]["candidates"]) == 57
+    assert len(batch["feature_definitions"]) == 163
     frames = document["outputs"]["replay_data"]["frame_data"]
+    events = document["outputs"]["events"]["events"]["events"]
+    touches = {
+        event["meta"]["id"]: event["payload"]["payload"]
+        for event in events
+        if event["meta"]["stream"] == "touch"
+    }
+    fifties = [
+        event["payload"]["payload"]
+        for event in events
+        if event["meta"]["stream"] == "fifty_fifty"
+    ]
     players = {json.dumps(player): data for player, data in frames["players"]}
     for candidate, row in zip(selection[0]["candidates"], batch["rows"], strict=True):
         assert row["source_event_id"] == candidate["source_event_ids"][0]
         for key in ("frame", "raw_time", "player_id"):
             assert row[key] == candidate[key]
         assert row["touch_id"] == candidate["evidence"]["touch_id"]
-        assert len(row["features"]) == 146
+        assert len(row["features"]) == 163
         samples = row["samples"]
+        assert row["features"]["first_touch_opponent"] is True
+        checked_touches = [
+            touches[source_id]
+            for source_id in [
+                row["source_event_id"],
+                *samples["first_touch"]["source_event_ids"],
+            ]
+        ]
+        for touch in checked_touches:
+            assert not any(
+                fifty["start_frame"] <= touch["frame"] <= fifty["resolve_frame"]
+                for fifty in fifties
+            )
+            assert {"group": "contested", "value": "contested"} not in touch["tags"]
         opponent = samples["closest_opponent_id"]
         if opponent is not None:
             before = samples["before_frame"]
@@ -136,8 +161,8 @@ def test_parquet_reviews_and_training_arrays_preserve_types_order_and_nulls(
     assert compute([combined_analysis, alias], engine, SAMPLING, output) == {
         "analyses": 2,
         "replays": 1,
-        "rows": 108,
-        "features": 146,
+        "rows": 57,
+        "features": 163,
     }
     table, contract = bang_dataset.load(output)
     assert contract["replays"][0]["replay_ids"] == ["sample", "alias"]
@@ -149,10 +174,19 @@ def test_parquet_reviews_and_training_arrays_preserve_types_order_and_nulls(
         ("touches_before_next_goal", pa.uint32()),
         ("approaching_teammate_count", pa.uint32()),
         ("approaching_opponent_count", pa.uint32()),
+        ("subject_consecutive_touches_before_candidate", pa.uint32()),
         ("closest_opponent_boost_before_pct", pa.float32()),
     ]:
         assert table[name].type == data_type
-    assert table["second_touch_delay_s"].null_count > 0
+    field = table.schema.field("second_touch_delay_s")
+    delays = table[field.name].to_pylist()
+    delays[0] = None
+    table = table.set_column(
+        table.schema.get_field_index(field.name),
+        field,
+        pa.array(delays, type=field.type),
+    )
+    pq.write_table(table, output)
     reviews = []
     for label, row in enumerate(table.slice(0, 2).to_pylist()):
         reviews.append(
@@ -173,12 +207,15 @@ def test_parquet_reviews_and_training_arrays_preserve_types_order_and_nulls(
     labeled = tmp_path / "labeled.parquet"
     assert prepare(output, annotations, labeled) == {
         "reviewed_rows": 2,
-        "unreviewed_rows": 106,
+        "unreviewed_rows": 55,
     }
     prepared, training_contract = dataset.load(labeled)
     features, labels, groups = dataset.arrays(prepared, training_contract)
-    assert features.shape == (2, 146)
+    assert features.shape == (2, 163)
     assert features.dtype == np.float32
+    assert np.isnan(
+        features[0, training_contract["feature_names"].index("second_touch_delay_s")]
+    )
     assert labels.tolist() == [0, 1]
     assert len(set(groups)) == 1
     assert prepared.schema.metadata == table.schema.metadata

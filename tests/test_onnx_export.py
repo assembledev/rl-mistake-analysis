@@ -4,7 +4,28 @@ import pytest
 from catboost import CatBoostClassifier
 from interpret.glassbox import ExplainableBoostingClassifier
 
-from training.onnx_export import additive_ebm, catboost, verify
+from training.onnx_export import additive_ebm, catboost, extra_trees, verify
+from training.train_selected import extra_trees_pipeline
+
+
+def test_extra_trees_export_preserves_imputation_and_missing_indicators():
+    features = np.array(
+        [[-2, np.nan, 0], [-1, np.nan, 1], [1, np.nan, 2], [np.nan, np.nan, 3]],
+        dtype=np.float32,
+    )
+    model = extra_trees_pipeline(n_estimators=20, random_state=42, n_jobs=1).fit(
+        features, [0, 0, 1, 1]
+    )
+    examples = np.vstack([features, [100, 10, np.nan], [np.nan, np.nan, np.nan]])
+    graph = extra_trees(model, features)
+    for rows in (1, len(examples)):
+        verify(graph, examples[:rows], model.predict_proba(examples[:rows])[:, 1])
+    np.testing.assert_array_equal(
+        model.named_steps["imputer"].statistics_, [-1, 0, 1.5]
+    )
+    np.testing.assert_array_equal(
+        model.named_steps["imputer"].indicator_.features_, [0, 1]
+    )
 
 
 @pytest.mark.parametrize("nan_mode", ["Min", "Max"])

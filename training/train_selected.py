@@ -11,6 +11,8 @@ import numpy as np
 import onnx
 from catboost import CatBoostClassifier
 from interpret.glassbox import ExplainableBoostingClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
@@ -21,17 +23,35 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
 from training.dataset import arrays, load, select_features
 from training.export import model_entry, write_manifest
-from training.onnx_export import additive_ebm, catboost, verify, xgboost
+from training.onnx_export import additive_ebm, catboost, extra_trees, verify, xgboost
 
 CONFIG = Path(__file__).parent / "configs/bumping_teammate_0.1.0.json"
+
+
+def extra_trees_pipeline(**parameters):
+    return Pipeline(
+        [
+            (
+                "imputer",
+                SimpleImputer(
+                    strategy="median", add_indicator=True, keep_empty_features=True
+                ),
+            ),
+            ("classifier", ExtraTreesClassifier(**parameters)),
+        ]
+    )
+
+
 MODELS = {
     ("bumping_teammate", "xgboost"): (XGBClassifier, xgboost),
     ("bang_with_time", "catboost"): (CatBoostClassifier, catboost),
     ("bang_with_time", "additive_ebm"): (ExplainableBoostingClassifier, additive_ebm),
+    ("bang_with_time", "extra_trees"): (extra_trees_pipeline, extra_trees),
 }
 
 
@@ -85,6 +105,7 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
         raise ValueError("Unsupported mistake kind and classifier in selected recipe")
     classifier_type, exporter = MODELS[identity]
     release_version = settings["version"]
+    candidate_schema = settings.get("candidate_schema")
     if (
         not isinstance(release_version, str)
         or not release_version.strip()
@@ -124,7 +145,12 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
         counts = np.bincount(training_labels, minlength=2)
         weights = np.sqrt(len(training_labels) / (2 * counts))
         weights /= np.mean(weights[training_labels])
-        fit_parameters["sample_weight"] = weights[training_labels]
+        weight_parameter = (
+            "classifier__sample_weight"
+            if settings["model"] == "extra_trees"
+            else "sample_weight"
+        )
+        fit_parameters[weight_parameter] = weights[training_labels]
         weighting = {
             "method": weighting,
             "power": 0.5,
@@ -186,6 +212,7 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
                     "xgboost": "xgboost",
                     "catboost": "catboost",
                     "additive_ebm": "interpret-core",
+                    "extra_trees": "scikit-learn",
                 }[settings["model"]],
                 "joblib",
                 "scikit-learn",
@@ -211,6 +238,15 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
     elif settings["model"] == "catboost":
         report["resolved_parameters"] = classifier.get_all_params()
         report["tree_count"] = classifier.tree_count_
+    elif settings["model"] == "extra_trees":
+        imputer = classifier.named_steps["imputer"]
+        report["fitted_parameters"] = {
+            "imputation_medians": imputer.statistics_.tolist(),
+            "missing_indicator_columns": imputer.indicator_.features_.tolist(),
+            "tree_count": len(classifier.named_steps["classifier"].estimators_),
+        }
+    if candidate_schema is not None:
+        report["candidate_schema"] = candidate_schema
     relative = Path("models") / settings["kind"] / settings["version"]
     model_directory = output / relative
     model_directory.mkdir(parents=True, exist_ok=False)
@@ -222,8 +258,10 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
         classifier.save_model(output / "xgboost.json")
     elif settings["model"] == "catboost":
         classifier.save_model(output / "catboost.cbm")
-    else:
+    elif settings["model"] == "additive_ebm":
         joblib.dump(classifier, output / "ebm.joblib")
+    else:
+        joblib.dump(classifier, output / "extra_trees.joblib")
     (output / "recipe.json").write_text(
         json.dumps(settings, indent=2, allow_nan=False) + "\n"
     )
@@ -245,6 +283,7 @@ def train(training_table, test_replays, output, *, source_revision, config=CONFI
         status=settings["status"],
         feature_names=settings["feature_names"],
         input_schema=settings["input_schema"],
+        candidate_schema=candidate_schema,
     )
     write_manifest(output, settings["version"], [entry])
     return report

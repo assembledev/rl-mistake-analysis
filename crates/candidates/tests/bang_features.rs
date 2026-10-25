@@ -4,6 +4,177 @@ use rl_mistake_analysis_candidates::bang_features::{
 use serde_json::{Value, json};
 use subtr_actor::{BALL_COLLISION_RADIUS, STANDARD_GOAL_LINE_Y, STANDARD_GOAL_MOUTH_HALF_WIDTH_X};
 
+#[test]
+fn consecutive_subject_touches_stop_at_other_players_and_play_boundaries() {
+    let mut document = fixture();
+    let events = document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap();
+    events[0] = touch(0, 0, 1, true, json!([]));
+    events.push(touch(20, 1, 1, true, json!([])));
+    let features = row(document.clone())["features"].clone();
+    assert_eq!(features["subject_consecutive_touches_before_candidate"], 2);
+    assert!(features["previous_opponent_touch_delay_s"].is_null());
+
+    document["outputs"]["events"]["events"]["events"][0] = touch(0, 0, 3, false, json!([]));
+    let features = row(document.clone())["features"].clone();
+    assert_eq!(features["subject_consecutive_touches_before_candidate"], 1);
+    assert_eq!(features["previous_opponent_touch_delay_s"], 1.);
+
+    let events = document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap();
+    events.push(touch(21, 1, 2, true, json!([])));
+    let features = row(document.clone())["features"].clone();
+    assert_eq!(features["subject_consecutive_touches_before_candidate"], 0);
+    assert_eq!(features["previous_opponent_touch_delay_s"], 1.);
+
+    document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(event(
+            "kickoff:0",
+            "kickoff",
+            json!({"start_time": 0., "live_action_start_time": 0.75}),
+        ));
+    let features = row(document)["features"].clone();
+    assert_eq!(features["subject_consecutive_touches_before_candidate"], 0);
+    assert!(features["previous_opponent_touch_delay_s"].is_null());
+}
+
+#[test]
+fn opponent_speed_and_subject_height_use_the_candidate_contact_frame() {
+    let mut document = fixture();
+    let frames = &mut document["outputs"]["replay_data"]["frame_data"];
+    frames["players"][2][1]["frames"][2]["Data"]["rigid_body"]["linear_velocity"] =
+        json!({"x": 0., "y": 0., "z": 40.});
+    frames["players"][0][1]["frames"][2]["Data"]["rigid_body"]["location"]["z"] = json!(333.);
+    frames["players"][2][1]["frames"][5]["Data"]["rigid_body"]["rotation"] =
+        json!({"x": 2., "y": 0., "z": 0., "w": 2.});
+    let row = row(document);
+    let f = &row["features"];
+    assert_eq!(f["closest_opponent_speed_at_candidate"], 40.);
+    assert_eq!(f["subject_height_at_candidate"], 333.);
+    assert_eq!(f["closest_opponent_velocity_relative_ball_up"], 0.);
+    assert_eq!(f["first_touch_opponent_heading_side"], -1.);
+    assert_eq!(f["first_touch_opponent_heading_up"], 0.);
+    assert_eq!(f["first_touch_opponent_up_toward"], -1.);
+    assert_eq!(f["first_touch_opponent_up_up"], 0.);
+    assert_eq!(
+        row["samples"]["closest_opponent_at_candidate_id"],
+        json!({"Steam": 3})
+    );
+    assert_eq!(
+        row["samples"]["first_touch_opponent_id"],
+        json!({"Steam": 3})
+    );
+}
+
+#[test]
+fn receiving_opponent_orientation_requires_one_toucher_and_its_contact_body() {
+    let mut document = fixture();
+    document["outputs"]["replay_data"]["frame_data"]["players"][2][1]["frames"][5] = json!("Empty");
+    let features = row(document)["features"].clone();
+    for direction in ["heading", "up"] {
+        for axis in ["toward", "side", "up"] {
+            assert!(features[format!("first_touch_opponent_{direction}_{axis}")].is_null());
+        }
+    }
+
+    let mut document = fixture();
+    add_opponent(&mut document, 5, body(1000., 2000., 1000.), 255.);
+    document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap()
+        .push(touch(22, 5, 5, false, json!([])));
+    let row = row(document);
+    assert!(row["samples"]["first_touch_opponent_id"].is_null());
+    assert!(row["features"]["first_touch_opponent_heading_side"].is_null());
+    assert!(row["features"]["first_touch_opponent_up_up"].is_null());
+    assert_eq!(row["features"]["closest_opponent_speed_at_candidate"], 13.);
+}
+
+#[test]
+fn full_opponent_possession_includes_earlier_time_and_stops_at_play_end() {
+    let mut document = fixture();
+    let events = &mut document["outputs"]["events"]["events"]["events"];
+    events[5]["payload"]["payload"]["end_time"] = json!(0.5);
+    events[6]["payload"]["payload"]["time"] = json!(0.5);
+    let f = row(document)["features"].clone();
+    assert_eq!(f["next_opponent_possession_duration_s"], 4.5);
+    assert_eq!(f["exchange_possession_opponent_s"], 2.5);
+
+    let f = row(fixture())["features"].clone();
+    assert_eq!(f["next_opponent_possession_duration_s"], 3.);
+}
+
+#[test]
+fn following_touch_possession_preserves_observed_negatives_and_unknown_gaps() {
+    let mut document = fixture();
+    let events = &mut document["outputs"]["events"]["events"]["events"];
+    events[5]["payload"]["payload"]["end_time"] = json!(3.);
+    events[6]["payload"]["payload"]["time"] = json!(3.);
+    assert_eq!(
+        row(document)["features"]["next_opponent_possession_duration_s"],
+        0.
+    );
+
+    let mut document = fixture();
+    document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap()
+        .remove(6);
+    assert!(row(document)["features"]["next_opponent_possession_duration_s"].is_null());
+
+    let mut document = fixture();
+    let events = &mut document["outputs"]["events"]["events"]["events"];
+    events[5]["payload"]["payload"]["end_time"] = json!(2.5);
+    events[6]["payload"]["payload"]["time"] = json!(2.5);
+    assert_eq!(
+        row(document)["features"]["next_opponent_possession_duration_s"],
+        2.5
+    );
+}
+
+#[test]
+fn native_thirds_shadow_defense_and_wall_tags_are_observed_at_the_contact() {
+    let mut document = fixture();
+    let events = document["outputs"]["events"]["events"]["events"]
+        .as_array_mut()
+        .unwrap();
+    events[1]["payload"]["payload"]["tags"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"group": "surface", "value": "wall"}));
+    events.push(event(
+        "third:1",
+        "field_third",
+        json!({"player": {"Steam": 1}, "time": 0., "end_time": 6.5, "state": "offensive"}),
+    ));
+    events.push(event(
+        "shadow:1",
+        "shadow_defense",
+        json!({"player": {"Steam": 1}, "time": 0.5, "end_time": 1.5, "state": "shadowing"}),
+    ));
+    let f = row(document.clone())["features"].clone();
+    assert_eq!(f["subject_field_third_at_candidate_offensive"], true);
+    assert_eq!(f["subject_field_third_at_candidate_defensive"], false);
+    assert_eq!(f["subject_shadow_defense_at_candidate"], true);
+    assert_eq!(f["own_team_shadow_defense_at_candidate"], true);
+    assert_eq!(f["candidate_surface_wall"], true);
+    assert_eq!(f["candidate_surface_air"], false);
+
+    document["outputs"]["replay_data"]["frame_data"]["players"][1][1]["frames"][2] = json!("Empty");
+    let f = row(document)["features"].clone();
+    assert_eq!(f["subject_shadow_defense_at_candidate"], true);
+    assert!(f["own_team_shadow_defense_at_candidate"].is_null());
+
+    let f = row(fixture())["features"].clone();
+    assert!(f["candidate_surface_wall"].is_null());
+    assert!(f["subject_field_third_at_candidate_offensive"].is_null());
+    assert_eq!(f["subject_shadow_defense_at_candidate"], false);
+}
+
 fn event(id: &str, stream: &str, payload: Value) -> Value {
     let kind = if stream == "air_dribble" {
         "ball_carry"
@@ -68,17 +239,17 @@ fn fixture() -> Value {
         candidate,
         touch(
             2,
-            5,
+            12,
             2,
             true,
-            json!([{"group": "action", "value": "pass"}, {"group": "contested", "value": "contested"}]),
+            json!([{"group": "action", "value": "pass"}]),
         ),
         touch(
             3,
             5,
             3,
             false,
-            json!([{"group": "action", "value": "shot"}, {"group": "possession", "value": "control"}, {"group": "contested", "value": "contested"}]),
+            json!([{"group": "action", "value": "shot"}, {"group": "possession", "value": "control"}]),
         ),
         touch(
             4,
@@ -447,14 +618,22 @@ fn goal_distances_allow_ball_overlap_and_direction_uses_the_native_velocity_ray(
 
 #[test]
 fn native_stages_preserve_simultaneous_touches_and_candidate_provenance() {
-    let row = row(fixture());
+    let mut document = fixture();
+    add_opponent(&mut document, 5, body(10000., 20000., 10000.), 255.);
+    document["outputs"]["events"]["events"]["events"][2] = touch(
+        2,
+        5,
+        5,
+        false,
+        json!([{"group": "action", "value": "pass"}]),
+    );
+    let row = row(document);
     assert_eq!(row["touch_id"], 1);
     assert_eq!(row["samples"]["outgoing_sample_frame"], 2);
     assert_eq!(row["samples"]["first_touch"]["touch_ids"], json!([2, 3]));
     assert_eq!(row["samples"]["second_touch"]["touch_ids"], json!([4]));
     let f = &row["features"];
     for name in [
-        "first_touch_teammate",
         "first_touch_opponent",
         "second_touch_self",
         "first_touch_action_pass",
@@ -473,6 +652,7 @@ fn native_stages_preserve_simultaneous_touches_and_candidate_provenance() {
     ] {
         assert_eq!(f[name], true, "{name}");
     }
+    assert_eq!(f["first_touch_teammate"], false);
     for (name, value) in [
         ("candidate_incoming_ball_speed", 13.),
         ("candidate_outgoing_ball_speed", 13.),
@@ -758,6 +938,7 @@ fn demolition_activity_excludes_cars_until_native_respawn() {
     });
     events.push(activity(3, false, "demolished", 0, 1));
     events.push(activity(3, false, "tracked", 1, 13));
+    events.push(touch(5, 9, 3, false, json!([])));
     for event in events.iter_mut().filter(|event| {
         event["meta"]["stream"] == "player_activity"
             && event["payload"]["payload"]["player"]["Steam"] == 4

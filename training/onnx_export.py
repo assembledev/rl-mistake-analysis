@@ -9,6 +9,54 @@ import onnxruntime as ort
 from onnx import TensorProto, helper, numpy_helper
 
 
+def extra_trees(model, example):
+    """Export Extra Trees with fitted imputation and one positive probability."""
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
+
+    from training.onnx_preprocessing import register_imputer
+
+    register_imputer()
+    classifier = model.named_steps["classifier"]
+    if not np.array_equal(classifier.classes_, [0, 1]):
+        raise ValueError("Extra Trees ONNX export requires binary labels 0 and 1")
+    graph = convert_sklearn(
+        model,
+        initial_types=[("features", FloatTensorType([None, example.shape[1]]))],
+        options={id(classifier): {"zipmap": False}},
+        target_opset={"": 13, "ai.onnx.ml": 3},
+    )
+    graph.graph.initializer.append(
+        helper.make_tensor("positive_class_index", TensorProto.INT64, [1], [1])
+    )
+    graph.graph.node.append(
+        helper.make_node(
+            "Gather",
+            [graph.graph.output[1].name, "positive_class_index"],
+            ["positive_probability"],
+            axis=1,
+        )
+    )
+    for name, value in (("probability_min", 0.0), ("probability_max", 1.0)):
+        graph.graph.initializer.append(
+            numpy_helper.from_array(np.asarray(value, dtype=np.float32), name)
+        )
+    graph.graph.node.append(
+        helper.make_node(
+            "Clip",
+            ["positive_probability", "probability_min", "probability_max"],
+            ["score"],
+        )
+    )
+    del graph.graph.output[:]
+    graph.graph.output.append(
+        helper.make_tensor_value_info("score", TensorProto.FLOAT, [None, 1])
+    )
+    graph.ir_version = 8
+    onnx.checker.check_model(graph)
+    return graph
+
+
 def catboost(model, example):
     """Export a numeric CatBoost classifier with one positive-class probability output."""
     if not np.array_equal(model.classes_, [0, 1]):

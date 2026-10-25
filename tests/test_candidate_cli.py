@@ -24,44 +24,16 @@ def test_native_events_determine_candidates_in_both_formats(engine, combined):
                     "touch_id": i,
                     "frame": i,
                     "time": float(i),
-                    "player": {"Epic": "a"},
-                    "is_team_0": True,
+                    "player": {"Epic": player},
+                    "is_team_0": team_zero,
                     "tags": [],
                 },
             },
         }
-        for i in range(4)
-    ]
-    events.append(
-        {
-            "meta": {"stream": "player_possession", "id": "episode"},
-            "payload": {
-                "kind": "player_possession",
-                "payload": {
-                    "player_id": {"Epic": "a"},
-                    "start_frame": 0,
-                    "end_frame": 4,
-                },
-            },
-        }
-    )
-    for i, (start, end, state) in enumerate(
-        [(0, 1, "team_zero"), (1, 2, "neutral"), (2, 4, "team_zero")]
-    ):
-        events.append(
-            {
-                "meta": {"stream": "possession", "id": f"ownership:{i}"},
-                "payload": {
-                    "kind": "possession",
-                    "payload": {
-                        "frame": start,
-                        "end_frame": end,
-                        "active": True,
-                        "possession_state": state,
-                    },
-                },
-            }
+        for i, (player, team_zero) in enumerate(
+            [("a", True), ("a", True), ("b", False), ("b", False), ("a", True)]
         )
+    ]
     document = {
         "name": "subtr-actor",
         "schema_version": 1,

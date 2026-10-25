@@ -24,6 +24,8 @@ pub struct ModelEntry {
     pub kind: String,
     pub version: String,
     pub input_schema: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_schema: Option<String>,
     pub feature_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling: Option<rl_mistake_analysis_candidates::feature_contract::FeatureSampling>,
@@ -123,6 +125,10 @@ impl ModelEntry {
             .iter()
             .any(|value| value.trim().is_empty())
             || self.feature_names.is_empty()
+            || self
+                .candidate_schema
+                .as_ref()
+                .is_some_and(|schema| schema.trim().is_empty())
             || self
                 .feature_names
                 .iter()

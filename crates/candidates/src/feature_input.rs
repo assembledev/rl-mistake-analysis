@@ -266,6 +266,15 @@ impl Rotation {
             z: 2.0 * (self.x * self.z - self.w * self.y) / norm,
         })
     }
+
+    pub fn up(&self) -> Result<Vector, String> {
+        let norm = self.norm()?;
+        Ok(Vector {
+            x: 2.0 * (self.x * self.z + self.w * self.y) / norm,
+            y: 2.0 * (self.y * self.z - self.w * self.x) / norm,
+            z: 1.0 - 2.0 * (self.x * self.x + self.y * self.y) / norm,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
