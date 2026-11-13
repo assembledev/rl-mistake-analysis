@@ -225,5 +225,59 @@ pub fn definitions() -> Vec<FeatureDefinition> {
         true,
         "Distinct native touch IDs strictly between passage and next goal",
     );
+    for name in [
+        "approach_min_subject_ball_distance",
+        "approach_subject_heading_alignment",
+        "approach_subject_ball_closing_speed",
+        "approach_closest_opponent_ball_distance",
+        "approach_closest_opponent_ball_closing_speed",
+    ] {
+        add(
+            name.into(),
+            DataType::F32,
+            true,
+            "Synchronized native geometry at the first subject-ball distance minimum within the approach",
+        );
+    }
+    for stage in ["approach", "passage"] {
+        add(
+            format!("{stage}_goal_side_teammate_count"),
+            DataType::U32,
+            true,
+            "Observed active other teammates on the goal side of the ball at approach minimum or passage",
+        );
+        for suffix in ["distance", "closing_speed"] {
+            add(
+                format!("{stage}_closest_goal_side_teammate_ball_{suffix}"),
+                DataType::F32,
+                true,
+                "Closest active goal-side other teammate at approach minimum or passage; empty observed sets have no selected player",
+            );
+        }
+    }
+    add(
+        "last_opponent_touch_delay_from_approach_minimum_s".into(),
+        DataType::F32,
+        true,
+        "Signed native last opponent touch time minus approach minimum time",
+    );
+    add(
+        "approach_ball_directed_at_own_goal".into(),
+        DataType::Boolean,
+        true,
+        "Shared goal-opening ray intersection using native ball position and velocity at approach minimum",
+    );
+    add(
+        "approach_ball_own_goal_distance".into(),
+        DataType::F32,
+        true,
+        "Shared ball-surface distance to own goal opening at approach minimum",
+    );
+    add(
+        "approach_opponent_possession_fraction".into(),
+        DataType::F32,
+        true,
+        "Exact opponent possession duration across native start-to-end spans divided by approach duration; incomplete coverage is unknown",
+    );
     definitions
 }

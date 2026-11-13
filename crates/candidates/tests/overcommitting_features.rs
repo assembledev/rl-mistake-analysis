@@ -112,7 +112,7 @@ fn supplied_intervals_reject_roster_players_without_native_frames() {
 #[test]
 fn native_approach_uses_irregular_time_weights_and_full_team_basis_vectors() {
     let batch = extracted(fixture());
-    assert_eq!(batch.feature_definitions.len(), 88);
+    assert_eq!(batch.feature_definitions.len(), 103);
     assert_eq!(batch.rows.len(), 1);
     let row = &batch.rows[0];
     assert_eq!((row.frame, row.end_frame, row.passage_frame), (1, 4, 4));
@@ -532,7 +532,7 @@ fn explicit_big_pickups_count_at_both_approach_boundaries_even_with_small_gain()
     let batch =
         overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
             .unwrap();
-    assert_eq!(batch.feature_definitions.len(), 88);
+    assert_eq!(batch.feature_definitions.len(), 103);
     let row = &batch.rows[0];
     assert_eq!(
         row.features["subject_big_boost_pickup_count"],
@@ -995,4 +995,402 @@ fn withdrawal_missing_data_affects_only_nonempty_native_windows() {
             "{missing}"
         );
     }
+}
+
+fn shortened_approach(end_frame: usize) -> CandidateBatch {
+    let mut exact = candidates(fixture());
+    exact.candidates[0].evidence["end_frame"] = json!(end_frame);
+    exact.candidates[0].evidence["end_time"] = json!(TIMES[end_frame]);
+    exact.candidates[0].evidence["finish"] = json!("retreat_to_opening_depth");
+    exact
+}
+
+fn add_teammate(document: &mut Value, name: &str, frames: Vec<Value>, tracked: bool) {
+    let id = json!({"Epic": name});
+    document["outputs"]["events"]["replay_meta"]["team_zero"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"remote_id": id}));
+    document["outputs"]["replay_data"]["frame_data"]["players"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!([id, {"frames": frames}]));
+    if tracked {
+        events(document).push(event(
+            &format!("{name}:activity"),
+            "player_activity",
+            json!({"player": id, "time": -1.0, "end_time": 7.0, "state": "tracked"}),
+        ));
+    }
+}
+
+#[test]
+fn approach_minimum_is_the_first_tie_before_retreat_finish_and_synchronizes_opponents() {
+    let mut document = fixture();
+    let exact = shortened_approach(3);
+    let players = &mut document["outputs"]["replay_data"]["frame_data"]["players"];
+    players[0][1]["frames"][1] = body(5.0, 0.0, 7.0, [0.0, 10.0, 0.0]);
+    for frame in [2, 3] {
+        players[0][1]["frames"][frame] = body(5.0, 70.0, 7.0, [0.0, 25.0, 0.0]);
+    }
+    players[1][1]["frames"][2] = body(5.0, 80.0, 7.0, [0.0, 15.0, 0.0]);
+    players[1][1]["frames"][3] = body(5.0, 100.0, 7.0, [0.0, 0.0, 0.0]);
+    let batch =
+        overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+            .unwrap();
+    let row = &batch.rows[0];
+    assert_eq!(row.samples.closest_approach_frame, Some(4));
+    assert_eq!(row.samples.approach_closest_approach_frame, Some(2));
+    assert_eq!(row.samples.approach_closest_approach_time, Some(TIMES[2]));
+    assert_eq!(number(row, "approach_min_subject_ball_distance"), 30.0);
+    assert_eq!(number(row, "approach_subject_heading_alignment"), 0.0);
+    assert_eq!(number(row, "approach_subject_ball_closing_speed"), 25.0);
+    assert_eq!(number(row, "approach_closest_opponent_ball_distance"), 20.0);
+    assert_eq!(
+        number(row, "approach_closest_opponent_ball_closing_speed"),
+        15.0
+    );
+    assert_eq!(number(row, "opponent_ball_distance_min"), 0.0);
+    assert_eq!(
+        row.samples.approach_closest_opponent_id,
+        Some(json!({"Epic": "orange"}))
+    );
+}
+
+#[test]
+fn contact_delay_preserves_whether_the_opponent_touch_precedes_or_follows_the_approach_minimum() {
+    for (contact, minimum, expected) in [(2, 3, -0.5), (3, 2, 0.5)] {
+        let mut document = fixture();
+        let exact = shortened_approach(3);
+        for frame in 1..=3 {
+            document["outputs"]["replay_data"]["frame_data"]["players"][0][1]["frames"][frame] =
+                body(
+                    5.0,
+                    if frame == minimum { 90.0 } else { 0.0 },
+                    7.0,
+                    [0.0, 10.0, 0.0],
+                );
+        }
+        if contact == 3 {
+            events(&mut document).push(touch(3, false, None));
+        }
+        let batch =
+            overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+                .unwrap();
+        assert_eq!(
+            number(
+                &batch.rows[0],
+                "last_opponent_touch_delay_from_approach_minimum_s"
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
+fn goal_side_cover_profiles_follow_the_selected_native_frame_and_player() {
+    let mut document = fixture();
+    let exact = shortened_approach(2);
+    let mut first = (0..9)
+        .map(|_| body(5.0, 0.0, 7.0, [0.0, 10.0, 0.0]))
+        .collect::<Vec<_>>();
+    first[4] = body(5.0, 50.0, 7.0, [0.0, 10.0, 0.0]);
+    let mut second = (0..9)
+        .map(|_| body(5.0, 150.0, 7.0, [0.0, 0.0, 0.0]))
+        .collect::<Vec<_>>();
+    second[4] = body(5.0, 10.0, 7.0, [0.0, -20.0, 0.0]);
+    add_teammate(&mut document, "first", first, true);
+    add_teammate(&mut document, "second", second, true);
+    let batch =
+        overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+            .unwrap();
+    let row = &batch.rows[0];
+    for prefix in ["approach", "passage"] {
+        assert_eq!(
+            row.features[&format!("{prefix}_goal_side_teammate_count")],
+            Some(Measurement::Count(1))
+        );
+    }
+    assert_eq!(
+        row.samples.approach_closest_goal_side_teammate_id,
+        Some(json!({"Epic": "first"}))
+    );
+    assert_eq!(
+        row.samples.passage_closest_goal_side_teammate_id,
+        Some(json!({"Epic": "second"}))
+    );
+    assert_eq!(
+        number(row, "approach_closest_goal_side_teammate_ball_distance"),
+        100.0
+    );
+    assert_eq!(
+        number(
+            row,
+            "approach_closest_goal_side_teammate_ball_closing_speed"
+        ),
+        10.0
+    );
+    assert_eq!(
+        number(row, "passage_closest_goal_side_teammate_ball_distance"),
+        10.0
+    );
+    assert_eq!(
+        number(row, "passage_closest_goal_side_teammate_ball_closing_speed"),
+        -20.0
+    );
+}
+
+#[test]
+fn duel_cover_is_observed_empty_while_unknown_teammate_geometry_is_unknown() {
+    let exact = shortened_approach(2);
+    let batch =
+        overcommitting_features::extract_for_candidates(&analyze(fixture()), sampling(), &exact)
+            .unwrap();
+    let row = &batch.rows[0];
+    for prefix in ["approach", "passage"] {
+        assert_eq!(
+            row.features[&format!("{prefix}_goal_side_teammate_count")],
+            Some(Measurement::Count(0))
+        );
+        for suffix in ["distance", "closing_speed"] {
+            assert_eq!(
+                row.features[&format!("{prefix}_closest_goal_side_teammate_ball_{suffix}")],
+                None
+            );
+        }
+    }
+    for missing in ["activity", "body", "velocity"] {
+        let mut document = fixture();
+        let mut frames = (0..9)
+            .map(|_| body(5.0, 0.0, 7.0, [0.0, 10.0, 0.0]))
+            .collect::<Vec<_>>();
+        if missing == "body" {
+            frames[2] = json!("Empty");
+        } else if missing == "velocity" {
+            frames[2]["Data"]["rigid_body"]["linear_velocity"] = Value::Null;
+        }
+        add_teammate(&mut document, "mate", frames, missing != "activity");
+        let batch =
+            overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+                .unwrap();
+        let row = &batch.rows[0];
+        assert_eq!(
+            row.features["approach_closest_goal_side_teammate_ball_closing_speed"],
+            None
+        );
+        if missing == "velocity" {
+            assert_eq!(
+                row.features["approach_goal_side_teammate_count"],
+                Some(Measurement::Count(1))
+            );
+            assert_eq!(
+                number(row, "approach_closest_goal_side_teammate_ball_distance"),
+                100.0
+            );
+        } else {
+            assert_eq!(row.features["approach_goal_side_teammate_count"], None);
+            assert_eq!(
+                row.features["approach_closest_goal_side_teammate_ball_distance"],
+                None
+            );
+        }
+    }
+}
+
+#[test]
+fn missing_approach_frame_does_not_select_a_different_minimum_or_erase_observed_passage_cover() {
+    let mut document = fixture();
+    let exact = shortened_approach(3);
+    document["outputs"]["replay_data"]["frame_data"]["players"][0][1]["frames"][2] = json!("Empty");
+    let batch =
+        overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+            .unwrap();
+    let row = &batch.rows[0];
+    assert_eq!(row.samples.approach_closest_approach_frame, None);
+    for name in [
+        "approach_min_subject_ball_distance",
+        "approach_closest_opponent_ball_distance",
+        "approach_goal_side_teammate_count",
+        "approach_ball_directed_at_own_goal",
+    ] {
+        assert_eq!(row.features[name], None);
+    }
+    assert_eq!(
+        row.features["passage_goal_side_teammate_count"],
+        Some(Measurement::Count(0))
+    );
+}
+
+#[test]
+fn approach_goal_threat_uses_native_velocity_and_the_shared_goal_opening_geometry() {
+    for velocity in [
+        Some([0.0, -100.0, 0.0]),
+        Some([0.0, 100.0, 0.0]),
+        Some([1000.0, -100.0, 0.0]),
+        None,
+    ] {
+        let mut document = fixture();
+        let exact = shortened_approach(2);
+        let goal = -f64::from(subtr_actor::STANDARD_GOAL_LINE_Y);
+        let native = &mut document["outputs"]["replay_data"]["frame_data"];
+        for (frame, offset) in [(1, 500.0), (2, 900.0)] {
+            native["players"][0][1]["frames"][frame] =
+                body(0.0, goal + offset, 100.0, [0.0, 10.0, 0.0]);
+            native["ball_data"]["frames"][frame] =
+                body(0.0, goal + 1000.0, 100.0, [0.0, -100.0, 0.0]);
+        }
+        native["ball_data"]["frames"][2]["Data"]["rigid_body"]["linear_velocity"] = velocity
+            .map(|value| json!({"x": value[0], "y": value[1], "z": value[2]}))
+            .unwrap_or(Value::Null);
+        let batch =
+            overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+                .unwrap();
+        let row = &batch.rows[0];
+        assert_eq!(row.samples.approach_closest_approach_frame, Some(2));
+        assert_eq!(
+            number(row, "approach_ball_own_goal_distance"),
+            1000.0 - subtr_actor::BALL_COLLISION_RADIUS
+        );
+        assert_eq!(
+            row.features["approach_ball_directed_at_own_goal"],
+            velocity.map(|value| Measurement::Boolean(value == [0.0, -100.0, 0.0]))
+        );
+    }
+}
+
+#[test]
+fn opponent_possession_fraction_integrates_native_span_boundaries_and_preserves_unknown_coverage() {
+    for kind in ["complete", "gap", "overlap"] {
+        let mut document = fixture();
+        let exact = shortened_approach(3);
+        events(&mut document).retain(|event| event["meta"]["stream"] != "possession");
+        for (id, start, end, state) in [
+            (
+                "before",
+                -1.0,
+                if kind == "overlap" { 1.0 } else { 0.75 },
+                "neutral",
+            ),
+            ("control", 0.75, 1.25, "team_one"),
+            ("after", 1.25, 7.0, "neutral"),
+        ] {
+            if kind != "gap" || id != "control" {
+                events(&mut document).push(event(id, "possession", json!({"time": start, "end_time": end, "active": true, "possession_state": state})));
+            }
+        }
+        let result =
+            overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact);
+        if kind == "overlap" {
+            assert!(result.unwrap_err().contains("overlapping possession spans"));
+        } else {
+            let batch = result.unwrap();
+            assert_eq!(
+                batch.rows[0].features["approach_opponent_possession_fraction"],
+                if kind == "gap" {
+                    None
+                } else {
+                    Some(Measurement::Float(0.5))
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn goal_side_cover_includes_depth_ties_ignores_demolitions_and_uses_deterministic_player_ties() {
+    for demolished in [false, true] {
+        let mut document = fixture();
+        let exact = shortened_approach(2);
+        for (name, x) in [("b", 15.0), ("a", -5.0)] {
+            add_teammate(
+                &mut document,
+                name,
+                (0..9)
+                    .map(|_| body(x, 100.0, 7.0, [5.0, 0.0, 0.0]))
+                    .collect(),
+                true,
+            );
+        }
+        if demolished {
+            for entry in events(&mut document) {
+                if entry["meta"]["id"] == "a:activity" {
+                    entry["payload"]["payload"]["state"] = json!("demolished");
+                }
+            }
+        }
+        let batch =
+            overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+                .unwrap();
+        let row = &batch.rows[0];
+        assert_eq!(
+            row.features["approach_goal_side_teammate_count"],
+            Some(Measurement::Count(if demolished { 1 } else { 2 }))
+        );
+        assert_eq!(
+            row.samples.approach_closest_goal_side_teammate_id,
+            Some(json!({"Epic": if demolished {"b"} else {"a"}}))
+        );
+        assert_eq!(
+            number(row, "approach_closest_goal_side_teammate_ball_distance"),
+            10.0
+        );
+        assert_eq!(
+            number(
+                row,
+                "approach_closest_goal_side_teammate_ball_closing_speed"
+            ),
+            if demolished { -5.0 } else { 5.0 }
+        );
+    }
+}
+
+#[test]
+fn approach_contest_cover_possession_and_threat_measurements_are_left_right_invariant() {
+    let mut document = fixture();
+    let exact = shortened_approach(2);
+    add_teammate(
+        &mut document,
+        "mate",
+        (0..9)
+            .map(|_| body(10.0, 0.0, 7.0, [1.0, 2.0, 0.0]))
+            .collect(),
+        true,
+    );
+    let original = overcommitting_features::extract_for_candidates(
+        &analyze(document.clone()),
+        sampling(),
+        &exact,
+    )
+    .unwrap();
+    let native = &mut document["outputs"]["replay_data"]["frame_data"];
+    let mirror = |frame: &mut Value| {
+        let body = &mut frame["Data"]["rigid_body"];
+        for field in ["location", "linear_velocity"] {
+            body[field]["x"] = json!(-body[field]["x"].as_f64().unwrap());
+        }
+        body["rotation"] = json!({"x": 0.0, "y": 0.0, "z": 1.0, "w": 0.0});
+    };
+    for frame in native["ball_data"]["frames"].as_array_mut().unwrap() {
+        mirror(frame);
+    }
+    for player in native["players"].as_array_mut().unwrap() {
+        for frame in player[1]["frames"].as_array_mut().unwrap() {
+            mirror(frame);
+        }
+    }
+    let transformed =
+        overcommitting_features::extract_for_candidates(&analyze(document), sampling(), &exact)
+            .unwrap();
+    for definition in original.feature_definitions.iter().skip(88) {
+        assert_eq!(
+            original.rows[0].features[&definition.name],
+            transformed.rows[0].features[&definition.name],
+            "{}",
+            definition.name
+        );
+    }
+    assert_eq!(
+        original.rows[0].samples.approach_closest_approach_frame,
+        transformed.rows[0].samples.approach_closest_approach_frame
+    );
 }

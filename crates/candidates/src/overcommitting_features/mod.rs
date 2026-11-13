@@ -1,5 +1,6 @@
 //! Native interval context for overcommitting candidates.
 
+mod approach;
 mod schema;
 
 pub use crate::feature_contract::{FeatureSampling, SamplingMethod};
@@ -50,6 +51,11 @@ pub struct Samples {
     pub play_end_frame: usize,
     pub closest_approach_frame: Option<usize>,
     pub closest_approach_time: Option<f64>,
+    pub approach_closest_approach_frame: Option<usize>,
+    pub approach_closest_approach_time: Option<f64>,
+    pub approach_closest_opponent_id: Option<Value>,
+    pub approach_closest_goal_side_teammate_id: Option<Value>,
+    pub passage_closest_goal_side_teammate_id: Option<Value>,
     pub closest_opponent_id: Option<Value>,
     pub closest_teammate_id: Option<Value>,
     pub nearest_big_pad_index: Option<usize>,
@@ -368,7 +374,8 @@ impl<'a> Extractor<'a> {
             .collect::<Vec<_>>();
         let first = later.first().copied().unwrap_or(&[]);
         let second = later.get(1).copied().unwrap_or(&[]);
-        let minimum = self.closest_approach(&e)?;
+        let minimum = self.closest_approach(&e, e.passage_frame)?;
+        let approach_minimum = self.closest_approach(&e, e.end_frame)?;
         let mut samples = Samples {
             start_frame: e.start_frame,
             start_time: e.start_time,
@@ -380,6 +387,11 @@ impl<'a> Extractor<'a> {
             play_end_frame: e.play_end_frame,
             closest_approach_frame: minimum.map(|(frame, _)| frame),
             closest_approach_time: minimum.map(|(frame, _)| metadata[frame].time),
+            approach_closest_approach_frame: approach_minimum.map(|(frame, _)| frame),
+            approach_closest_approach_time: approach_minimum.map(|(frame, _)| metadata[frame].time),
+            approach_closest_opponent_id: None,
+            approach_closest_goal_side_teammate_id: None,
+            passage_closest_goal_side_teammate_id: None,
             closest_opponent_id: None,
             closest_teammate_id: None,
             nearest_big_pad_index: None,
@@ -401,6 +413,7 @@ impl<'a> Extractor<'a> {
         self.bump_features(&e, minimum, &mut samples, &mut values)?;
         followup_features(c, &e, first, second, &previous, &mut values)?;
         self.shot_features(&e, &mut values)?;
+        self.challenge_features(&e, approach_minimum, &mut samples, &mut values)?;
         values.validate(definitions)?;
         let row = FeatureRow {
             identity: feature_contract::context_key(candidate)?,
@@ -538,10 +551,14 @@ impl<'a> Extractor<'a> {
         Ok(Some(distance))
     }
 
-    fn closest_approach(&self, e: &Evidence) -> Result<Option<(usize, f64)>, String> {
+    fn closest_approach(
+        &self,
+        e: &Evidence,
+        end_frame: usize,
+    ) -> Result<Option<(usize, f64)>, String> {
         let subject = self.context.player(&e.player)?;
         let mut closest: Option<(usize, f64)> = None;
-        for frame in e.start_frame..=e.passage_frame {
+        for frame in e.start_frame..=end_frame {
             let Some((car, ball)) = subject.frames[frame]
                 .body()
                 .zip(self.context.ball(Some(frame)))

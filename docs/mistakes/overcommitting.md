@@ -65,15 +65,17 @@ Deepest by Y means no tracked teammate has smaller `s × y`. Farthest goal-side 
 
 ## Feature calculations
 
-The contract contains **88 scalar columns**. One interval produces one row.
+The extraction catalog contains **103 scalar columns**. One interval produces one row. Models select an explicit ordered subset of this catalog.
 
-`S` is the opening frame, `E` the approach finish, and `P` the passage confirmation. `C` is the last opponent contact frame in S..P, or unavailable when no such contact exists. `M` is the first frame attaining the minimum subject-to-ball distance in S..P. `T` is the subject’s preceding contact frame before S in the same play. Frame ranges include both endpoints unless stated otherwise. Later contacts and goals stop at the saved live-play boundary.
+`S` is the opening frame, `E` the approach finish, and `P` the passage confirmation. `C` is the last opponent contact frame in S..P, or unavailable when no such contact exists. `M` is the first frame attaining the minimum subject-to-ball distance in S..P. `A` is the first frame attaining that minimum in S..E, describing the approach before any later passage confirmation. `T` is the subject’s preceding contact frame before S in the same play. Frame ranges include both endpoints unless stated otherwise. Later contacts and goals stop at the saved live-play boundary.
 
 Time-weighted means use trapezoidal integration over native timestamps. Distance minima exclude demolished players and are null when required tracking is unknown or no active car appears in the range. Means require an active car at every frame.
 
-Closest-player selection uses 3D distance at S, excludes the subject from teammate comparisons, ignores demolished players, and resolves ties by serialized player ID. Unknown active-player geometry leaves the corresponding profile unavailable. The shared bump sampler selects the native preceding frame, first acceleration peak, and following minimum within the same play; unavailable impact stages stay null. Whiff and beaten tags are auxiliary measurements.
+Opening closest-player selection uses 3D distance at S. The approach profile selects the closest opponent at A; goal-side teammate profiles select the closest other teammate satisfying s × (ball.y − teammate.y) ≥ 0 at A or P. These selections exclude the subject from teammate comparisons, ignore demolished players, and resolve ties by serialized player ID. Unknown active-player geometry leaves the corresponding profile unavailable. The shared bump sampler selects the native preceding frame, first acceleration peak, and following minimum within the same play; unavailable impact stages stay null. Whiff and beaten tags are auxiliary measurements.
 
 Withdrawal uses the subject’s own horizontal velocity relative to the current car-to-ball direction. The before/after sums split at C and use the left frame’s measurement for each native time interval. A missing C leaves both distances null. An empty window is zero; a nonempty window with missing required geometry or velocity, or coincident horizontal car/ball centers, is null. These measurements describe movement and contact order.
+
+An observed empty goal-side teammate set has count zero and no selected player. Unknown active-player geometry leaves the count and selected-player profile null. Closing speed is native car velocity dotted with the 3D unit car-to-ball vector at the selected frame; coincident centers leave it null. Opponent possession fraction integrates exact native possession-span intersections with S..E and divides by t(E) − t(S). Incomplete coverage leaves it null; overlapping spans are invalid.
 
 Distances use native arena units, speeds use arena units per second, delays use replay seconds, and quaternion angles use radians. Goal geometry and ball radius come from SubtrActor constants. Missing size/index metadata, required velocities, or a coincident horizontal target leaves the mean null. The selected pad stays fixed through the interval.
 
@@ -167,6 +169,21 @@ Distances use native arena units, speeds use arena units per second, delays use 
 | `next_goal_opponent` | bool | True if the goal ending this play was scored by the opponent; false if no such goal exists. | goal_context |
 | `next_goal_delay_s` | nullable float32 | Next goal time in the same play minus t(P); null if there is no goal. | goal_context |
 | `touches_before_next_goal` | nullable uint32 | Count distinct native touch IDs strictly between P and the next goal; null if there is no goal. | touch, goal_context |
+| `approach_min_subject_ball_distance` | nullable float32 | Subject-center to ball-center distance at A. | Native car and ball frames |
+| `approach_subject_heading_alignment` | nullable float32 | Subject forward unit vector dotted with its unit car-to-ball vector at A. | Native car quaternion and positions |
+| `approach_subject_ball_closing_speed` | nullable float32 | Subject velocity dotted with its unit car-to-ball vector at A. | Native car velocity and positions |
+| `approach_closest_opponent_ball_distance` | nullable float32 | Closest active opponent-center to ball-center distance at A. | Native roster, activity and positions |
+| `approach_closest_opponent_ball_closing_speed` | nullable float32 | Selected opponent velocity dotted with its unit car-to-ball vector at A. | Native roster, activity, positions and velocity |
+| `approach_goal_side_teammate_count` | nullable uint32 | Number of active other teammates on the goal side of the ball at A. | Native roster, activity and positions |
+| `approach_closest_goal_side_teammate_ball_distance` | nullable float32 | Closest active goal-side other-teammate-center to ball-center distance at A. | Native roster, activity and positions |
+| `approach_closest_goal_side_teammate_ball_closing_speed` | nullable float32 | The same selected goal-side teammate velocity dotted with its unit car-to-ball vector at A. | Native roster, activity, positions and velocity |
+| `passage_goal_side_teammate_count` | nullable uint32 | Number of active other teammates on the goal side of the ball at P. | Native roster, activity and positions |
+| `passage_closest_goal_side_teammate_ball_distance` | nullable float32 | Closest active goal-side other-teammate-center to ball-center distance at P. | Native roster, activity and positions |
+| `passage_closest_goal_side_teammate_ball_closing_speed` | nullable float32 | The same selected goal-side teammate velocity dotted with its unit car-to-ball vector at P. | Native roster, activity, positions and velocity |
+| `last_opponent_touch_delay_from_approach_minimum_s` | nullable float32 | t(C) − t(A), retaining the sign; null without C or A. | Native touch and metadata timestamps |
+| `approach_ball_directed_at_own_goal` | nullable bool | Whether the instantaneous native ball-velocity ray at A intersects the own goal opening, including ball radius. | Shared goal-opening intersection, native ball position and velocity |
+| `approach_ball_own_goal_distance` | nullable float32 | Ball-surface distance to the nearest point of the own goal opening at A. | Shared goal-opening distance, native ball position |
+| `approach_opponent_possession_fraction` | nullable float32 | Exact duration of opponent native possession intersecting S..E, divided by t(E) − t(S). | Shared possession-duration integration, native possession spans |
 
 ## Evidence
 
@@ -190,3 +207,13 @@ Distances use native arena units, speeds use arena units per second, delays use 
 | `opponent_touch_ids` | Opponent touches from opening through passage. | `touch` |
 | `opponent_shot_ids` | Opponent shots before the own-team-touch cutoff. | `touch`, `timeline` |
 | `next_own_touch_frame` | Next strictly later own-team contact, or null before play end. | `touch` |
+
+Feature sample references also retain the approach-specific frame and selected players:
+
+| Sample field | Meaning | Source |
+| --- | --- | --- |
+| `approach_closest_approach_frame` | A, the first minimum-distance frame within S..E, or null for incomplete approach geometry. | Native subject and ball positions |
+| `approach_closest_approach_time` | Native timestamp at A, or null when A is unavailable. | `metadata_frames` |
+| `approach_closest_opponent_id` | Selected closest active opponent at A, or null for an absent or unknown profile. | Native roster, activity and positions |
+| `approach_closest_goal_side_teammate_id` | Selected closest active goal-side other teammate at A, or null for an empty or unknown profile. | Native roster, activity and positions |
+| `passage_closest_goal_side_teammate_id` | Selected closest active goal-side other teammate at P, or null for an empty or unknown profile. | Native roster, activity and positions |
