@@ -67,7 +67,7 @@ fn acceleration(
     Ok(delta.x.hypot(delta.y).hypot(delta.z) / dt)
 }
 
-pub(super) fn measure(
+pub(crate) fn measure(
     player: &PlayerData,
     frames: &[Metadata],
     bump_frame: usize,

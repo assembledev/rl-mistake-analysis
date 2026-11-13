@@ -382,3 +382,71 @@ def test_bang_context_models_use_the_shared_join_export_and_scorer(
     )
     assert rejected.returncode == 1
     assert b"sampling method" in rejected.stderr
+
+
+def test_overcommitting_export_retains_sampling_for_selected_inputs(
+    engine, tmp_path, monkeypatch
+):
+    import pyarrow as pa
+
+    from training import export
+
+    contract = {
+        "schema_version": 1,
+        "kind": "overcommitting",
+        "input_schema": "overcommitting.context.v1",
+        "sampling": {"method": "native_interval_boundaries"},
+        "feature_names": ["approach_duration_s", "goal_side_teammate_count"],
+        "feature_definitions": [
+            {
+                "name": "approach_duration_s",
+                "data_type": "f32",
+                "nullable": True,
+                "source": "native fixture",
+            },
+            {
+                "name": "goal_side_teammate_count",
+                "data_type": "u32",
+                "nullable": True,
+                "source": "native fixture",
+            },
+        ],
+    }
+    table = pa.table({"engine_revision": ["fixture"]})
+    monkeypatch.setattr(export, "load", lambda _path: (table, contract))
+    graph = helper.make_model(
+        helper.make_graph(
+            [helper.make_node("Sigmoid", ["features"], ["score"])],
+            "duration_probability",
+            [helper.make_tensor_value_info("features", TensorProto.FLOAT, [None, 1])],
+            [helper.make_tensor_value_info("score", TensorProto.FLOAT, [None, 1])],
+        ),
+        opset_imports=[helper.make_opsetid("", 13)],
+        ir_version=8,
+    )
+    onnx.save(graph, tmp_path / "model.onnx")
+    (tmp_path / "evaluation.json").write_text("{}")
+    entry = export.model_entry(
+        tmp_path,
+        tmp_path / "training.parquet",
+        version="test",
+        model_file="model.onnx",
+        evaluation_file="evaluation.json",
+        keep_threshold=0.5,
+        source_revision="fixture",
+        status="experimental",
+        feature_names=["approach_duration_s"],
+        input_schema="overcommitting.context.v1.release_test.v1",
+        candidate_schema="overcommitting.candidates.v1",
+    )
+    assert entry["sampling"] == {"method": "native_interval_boundaries"}
+    assert entry["feature_names"] == ["approach_duration_s"]
+    write_manifest(tmp_path, "test", [entry])
+    assert run(engine, "validate-manifest", tmp_path)["models"] == 1
+    del entry["sampling"]
+    write_manifest(tmp_path, "test", [entry])
+    rejected = subprocess.run(
+        [str(engine), "validate-manifest", str(tmp_path)], capture_output=True
+    )
+    assert rejected.returncode == 1
+    assert b"feature sampling" in rejected.stderr

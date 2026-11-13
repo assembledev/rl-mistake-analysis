@@ -64,13 +64,17 @@ A **candidate** is an event to review for one player. A **batch** contains the c
 | `replay_sha256` | Checksum of the original recording bytes |
 | `candidates` | Selected incidents |
 
-Each candidate contains the mistake `kind`, frame number and time (`frame`, `raw_time`), player being evaluated (`player_id`), measurements (`features`), original event data (`evidence`), and original event IDs (`source_event_ids`). Measurements follow the order in `feature_names`.
+Each candidate contains the mistake `kind`, frame number and time (`frame`, `raw_time`), player being evaluated (`player_id`), measurements (`features`), native incident evidence (`evidence`), and original event IDs (`source_event_ids`). Measurements follow the order in `feature_names`.
+
+Interval candidates use `frame` and `raw_time` for the opening, with their closing frame and time in `evidence`. [Overcommitting](mistakes/overcommitting.md) includes the opening and approach-finish frames in its incident key and records the passage frame as failure evidence.
 
 ## Context measurements
 
 Context extractors produce one row per selected incident and subject. A batch carries `input_schema`, `engine_revision`, `replay_sha256`, `sampling`, ordered `feature_definitions`, and `rows`.
 
-Each feature definition declares a `name`, `data_type` (`boolean`, `f32`, or `u32`), `nullable`, and `source`. Rows contain the incident key, judged player, source event, timestamp, actual sample references, and a feature-name-to-value map. JSON `null` represents an unavailable observation.
+Each feature definition declares a `name`, `data_type` (`boolean`, `f32`, or `u32`), `nullable`, and `source`. Rows contain the incident key, judged player, source event IDs, timestamp, actual sample references, and a feature-name-to-value map. JSON `null` represents an unavailable observation.
+
+Overcommitting rows retain `frame`, `end_frame`, `passage_frame`, and the complete `source_event_ids` list. Context scoring joins intervals by opening frame, approach-finish frame, and judged player within the recording; different intervals may share contributing native events. Supplied candidate batches select exact reviewed boundaries without rerunning candidate selection.
 
 The kind's base context schema defines the measurements and units. Models select unique known names in their declared order. A named selection uses `BASE_SCHEMA.NAME.v1`, where `NAME` contains letters, digits, or underscores. Changes to measurement meaning or units use a new base schema version.
 
@@ -103,7 +107,7 @@ The `id` inside the `download` object is a Ballchasing identifier. The fetch too
 | Kind-specific identity fields | Fields required to identify an incident for this mistake kind |
 | `player_id` | Required identity of the judged participant |
 | `raw_time` | Original event time |
-| `evidence` | Original supplier event payload |
+| `evidence` | Native incident evidence, including interval boundaries where applicable |
 | `label` | Human decision: `0` or `1` |
 | `reject_reason` | Optional reviewer rejection reason |
 | `engine_revision` | Supplier revision that produced the reviewed event |
@@ -128,7 +132,7 @@ Preparation combines human labels with recalculated features. One Parquet table 
 
 The two revision columns distinguish preparation's supplier code from the code used when the incident was reviewed. File metadata named `rl_mistake_analysis` contains `schema_version: 1`, `kind`, `input_schema`, ordered `feature_names`, and `replays`. Readers use this metadata to select model inputs in the correct order. All selected annotations must match before the table is saved.
 
-Context tables use metadata named `rl_mistake_analysis_features`, with ordered typed `feature_definitions` and a `sampling` contract. Feature columns retain their boolean, float32 or uint32 types and declared nullability. Feature rows retain the kind-specific incident key, judged player, source event, and actual sample references. Annotation joins preserve the feature contract and column order.
+Context tables use metadata named `rl_mistake_analysis_features`, with ordered typed `feature_definitions` and a `sampling` contract. Feature columns retain their boolean, float32 or uint32 types and declared nullability. Feature rows retain the kind-specific incident key, judged player, source event IDs, and actual sample references. Annotation joins preserve the feature contract and column order.
 
 The shared dataset API converts declared features into ordered float32 model inputs. Boolean values become `0` and `1`; nullable measurements become `NaN`. It returns labels and recording checksums alongside the input matrix for grouped training and evaluation.
 

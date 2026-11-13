@@ -11,7 +11,10 @@ pub use schema::{DataType, FeatureDefinition, definitions};
 use crate::feature_context::{Context, possession_state, tag};
 use crate::feature_contract::{self, ContextFeatures};
 pub use crate::feature_contract::{FeatureSampling, SamplingMethod};
-use crate::feature_input::{Body, Event, Vector};
+use crate::feature_input::{Event, Vector};
+use crate::feature_measurements::{
+    Surroundings, TeamDistance, displacement, surrounding_players, team_basis, team_distances,
+};
 use crate::feature_values::Values;
 use crate::{Candidate, CandidateBatch, MistakeKind};
 use serde::Serialize;
@@ -75,14 +78,6 @@ fn stage(events: &[&Event]) -> Result<Option<TouchStage>, String> {
             .map(|event| touch_id(event))
             .collect::<Result<_, _>>()?,
     }))
-}
-
-fn team_basis(team_zero: bool) -> Vector {
-    Vector {
-        x: 0.0,
-        y: if team_zero { 1.0 } else { -1.0 },
-        z: 0.0,
-    }
 }
 
 fn stage_features(
@@ -190,93 +185,6 @@ fn stage_features(
     Ok(())
 }
 
-struct OpponentSample<'a> {
-    player_id: &'a Value,
-    player_key: String,
-    body: &'a Body,
-    distance: f64,
-}
-
-struct Surroundings<'a> {
-    approaching: [Option<u32>; 2],
-    closest_opponent: Option<OpponentSample<'a>>,
-}
-
-fn surrounding_players<'a>(
-    context: &Context<'a>,
-    roster: &HashMap<String, bool>,
-    subject: &Value,
-    team: bool,
-    frame: Option<usize>,
-) -> Result<Surroundings<'a>, String> {
-    let frames = &context.analysis.outputs.replay_data.frame_data;
-    let observation = frame.zip(context.ball(frame));
-    let mut counts = [observation.map(|_| 0u32); 2];
-    let mut nearest: Option<OpponentSample<'_>> = None;
-    if let Some((frame, ball)) = observation {
-        let time = frames.metadata_frames[frame].time;
-        let mut opponent_missing = false;
-        for (id, data) in &frames.players {
-            if id == subject {
-                continue;
-            }
-            let player_key = id.to_string();
-            let opponent = roster[&player_key] != team;
-            let role = usize::from(opponent);
-            match context.state("player_activity", Some(id), time)? {
-                Some("demolished") => continue,
-                Some("tracked") => (),
-                None => {
-                    counts[role] = None;
-                    opponent_missing |= opponent;
-                    continue;
-                }
-                Some(state) => return Err(format!("invalid player activity state: {state}")),
-            }
-            let native_frame = &data.frames[frame];
-            let Some(body) = native_frame.body() else {
-                counts[role] = None;
-                opponent_missing |= opponent;
-                continue;
-            };
-            let to_ball = ball.location.subtract(body.location);
-            let distance = to_ball.length();
-            if !distance.is_finite() {
-                return Err("nonfinite car-ball distance".into());
-            }
-            if let Some(velocity) = body.linear_velocity {
-                let approach = velocity.dot(to_ball);
-                if !approach.is_finite() {
-                    return Err("nonfinite car approach measurement".into());
-                }
-                counts[role] = counts[role].map(|count| count + u32::from(approach > 0.0));
-            } else {
-                counts[role] = None;
-            }
-            if opponent
-                && nearest.as_ref().is_none_or(|previous| {
-                    distance < previous.distance
-                        || (distance == previous.distance && player_key < previous.player_key)
-                })
-            {
-                nearest = Some(OpponentSample {
-                    player_id: id,
-                    player_key,
-                    body,
-                    distance,
-                });
-            }
-        }
-        if opponent_missing {
-            nearest = None;
-        }
-    }
-    Ok(Surroundings {
-        approaching: counts,
-        closest_opponent: nearest,
-    })
-}
-
 fn surrounding_features(
     context: &Context<'_>,
     roster: &HashMap<String, bool>,
@@ -336,44 +244,11 @@ fn surrounding_features(
     Ok(nearest.map(|opponent| opponent.player_id.clone()))
 }
 
-fn displacement(
-    context: &Context<'_>,
-    subject: &Value,
-    before: Option<usize>,
-    end: Option<usize>,
-) -> Result<Option<Vector>, String> {
-    let Some((before, end)) = before.zip(end) else {
-        return Ok(None);
-    };
-    for event in context.events("demolition") {
-        if event.participant("victim")? == subject
-            && event.frame("frame")? >= before
-            && event.frame("frame")? <= end
-        {
-            return Ok(None);
-        }
-    }
-    let frames = &context.player(subject)?.frames;
-    if frames[before..=end]
-        .iter()
-        .any(|frame| frame.body().is_none())
-    {
-        return Ok(None);
-    }
-    Ok(Some(
-        frames[end]
-            .body()
-            .unwrap()
-            .location
-            .subtract(frames[before].body().unwrap().location),
-    ))
-}
-
 struct ReplayContext<'a> {
     context: Context<'a>,
     roster: HashMap<String, bool>,
     touches: BTreeMap<usize, Vec<&'a Event>>,
-    team_distances: Vec<[exchange::TeamDistance; 2]>,
+    team_distances: Vec<[TeamDistance; 2]>,
 }
 
 impl<'a> ReplayContext<'a> {
@@ -431,7 +306,7 @@ impl<'a> ReplayContext<'a> {
         for group in groups.values_mut() {
             group.sort_by_key(|event| event.meta.id.as_str());
         }
-        let team_distances = exchange::team_distances(&context, &roster)?;
+        let team_distances = team_distances(&context, &roster)?;
         Ok(Self {
             context,
             roster,

@@ -4,7 +4,9 @@ mod replay;
 
 use rl_mistake_analysis_candidates::bump_features;
 use rl_mistake_analysis_candidates::feature_contract::{self, FeatureSampling, ReplayAnalysis};
-use rl_mistake_analysis_candidates::{MistakeKind, ReplayFacts, bang_features};
+use rl_mistake_analysis_candidates::{
+    CandidateBatch, MistakeKind, ReplayFacts, bang_features, overcommitting_features,
+};
 use rl_mistake_analysis_inference::{Model, manifest::Manifest};
 use std::{env, fs, io, path::Path};
 
@@ -14,14 +16,17 @@ const HELP: &str = "Usage:
   rl-mistake-analysis replay-data FILE.replay > replay.json
   rl-mistake-analysis events FILE.replay > events.json
   rl-mistake-analysis candidates KIND < events.json
-  rl-mistake-analysis candidates --all < events.json
+  rl-mistake-analysis candidates --all < replay.json
   rl-mistake-analysis bump-features SAMPLING.json [--player PLAYER_ID_JSON] < replay.json
   rl-mistake-analysis bump-feature-contract
   rl-mistake-analysis bang-features SAMPLING.json [--player PLAYER_ID_JSON] < replay.json
   rl-mistake-analysis bang-feature-contract
+  rl-mistake-analysis overcommitting-features SAMPLING.json [--player PLAYER_ID_JSON] [--candidates BATCH.json] < replay.json
+  rl-mistake-analysis overcommitting-feature-contract
   rl-mistake-analysis contract KIND
   rl-mistake-analysis contract KIND --schema bumping_teammate.context.v1
   rl-mistake-analysis contract KIND --schema bang_with_time.context.v1
+  rl-mistake-analysis contract KIND --schema overcommitting.context.v1
   rl-mistake-analysis validate-annotations ANNOTATIONS.json
   rl-mistake-analysis prepare ANNOTATIONS.json REPLAY_DIRECTORY OUTPUT.parquet KIND
   rl-mistake-analysis validate-manifest DIRECTORY
@@ -34,17 +39,20 @@ Available output types: events, replay_data, stats, stats_timeline, features.
 replay-data exports the full structured subtr-actor replay, including frames and gameplay events.
 events extracts subtr-actor events from a Rocket League replay.
 candidates requires a KIND or --all to select every implemented kind.
-It accepts events-only and combined replay exports.
+Overcommitting and --all require combined events,replay_data exports.
+Bump and bang also accept events-only exports.
 bump-features computes subject-specific measurements from combined events,replay_data exports.
 SAMPLING.json must specify method: first_acceleration_peak_then_minimum for bump,
-or native_touch_stages for bang; no defaults are supplied.
+native_touch_stages for bang, or native_interval_boundaries for overcommitting; no defaults are supplied.
 Without --player, bump-features emits both participant perspectives for each teammate bump.
 bump-feature-contract lists the ordered feature definitions for those measurements.
 bang-features computes touch-stage context for native bang candidates from combined exports.
 bang-feature-contract lists the ordered bang feature definitions.
+overcommitting-features computes one interval context row per judged player.
+--candidates supplies exact native interval candidates instead of running selection.
 contract emits a kind's feature schema and ordered feature names.
 validate-annotations checks replay references and incident annotations.
-prepare writes the native training table; context training uses training.bump_dataset or training.bang_dataset.
+prepare writes native training tables. Use the Python dataset adapters for context features.
 validate-manifest checks the model catalog and its declared artifact hashes.
 score evaluates one kind with its supplied model.";
 
@@ -60,13 +68,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         [command]
             if matches!(
                 command.as_str(),
-                "bump-feature-contract" | "bang-feature-contract"
+                "bump-feature-contract"
+                    | "bang-feature-contract"
+                    | "overcommitting-feature-contract"
             ) =>
         {
             let kind = if command == "bump-feature-contract" {
                 MistakeKind::BumpingTeammate
-            } else {
+            } else if command == "bang-feature-contract" {
                 MistakeKind::BangWithTime
+            } else {
+                MistakeKind::Overcommitting
             };
             let definition = kind.definition();
             serde_json::json!({
@@ -75,14 +87,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             })
         }
         [command, sampling, options @ ..]
-            if matches!(command.as_str(), "bump-features" | "bang-features") =>
+            if matches!(
+                command.as_str(),
+                "bump-features" | "bang-features" | "overcommitting-features"
+            ) =>
         {
             let sampling: FeatureSampling = serde_json::from_slice(&fs::read(sampling)?)?;
-            let subject = match options {
-                [] => None,
-                [flag, id] if flag == "--player" => Some(serde_json::from_str(id)?),
-                _ => return Err("expected --player followed by a JSON player ID".into()),
-            };
+            let mut subject = None;
+            let mut candidates = None;
+            for pair in options.chunks(2) {
+                match pair {
+                    [flag, id] if flag == "--player" && subject.is_none() => {
+                        subject = Some(serde_json::from_str(id)?);
+                    }
+                    [flag, path]
+                        if flag == "--candidates"
+                            && command == "overcommitting-features"
+                            && candidates.is_none() =>
+                    {
+                        let [batch]: [CandidateBatch; 1] =
+                            serde_json::from_slice(&fs::read(path)?)?;
+                        candidates = Some(batch);
+                    }
+                    _ => return Err("invalid or duplicate feature option".into()),
+                }
+            }
             let analysis: ReplayAnalysis = serde_json::from_reader(io::stdin().lock())?;
             if command == "bump-features" {
                 serde_json::to_value(bump_features::extract(
@@ -90,8 +119,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     sampling,
                     subject.as_ref(),
                 )?)?
-            } else {
+            } else if command == "bang-features" {
                 let (_, features) = bang_features::extract(&analysis, sampling, subject.as_ref())?;
+                serde_json::to_value(features)?
+            } else if let Some(mut candidates) = candidates {
+                if let Some(subject) = subject {
+                    candidates
+                        .candidates
+                        .retain(|candidate| candidate.player_id == subject);
+                }
+                serde_json::to_value(overcommitting_features::extract_for_candidates(
+                    &analysis,
+                    sampling,
+                    &candidates,
+                )?)?
+            } else {
+                let (_, features) =
+                    overcommitting_features::extract(&analysis, sampling, subject.as_ref())?;
                 serde_json::to_value(features)?
             }
         }
@@ -107,11 +151,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 [name] => vec![MistakeKind::parse(name)?],
                 _ => return Err("candidates requires KIND or --all".into()),
             };
-            let replay = read_events()?;
-            let batches = kinds
-                .into_iter()
-                .map(|kind| kind.candidates(&replay))
-                .collect::<Result<Vec<_>, _>>()?;
+            let document = serde_json::from_reader(io::stdin().lock())?;
+            let batches = if kinds.contains(&MistakeKind::Overcommitting) {
+                let analysis: ReplayAnalysis = serde_json::from_value(document)?;
+                kinds
+                    .into_iter()
+                    .map(|kind| kind.candidates_from_analysis(&analysis))
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                let replay = event_facts(document)?;
+                kinds
+                    .into_iter()
+                    .map(|kind| kind.candidates(&replay))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
             serde_json::to_value(batches)?
         }
         [command, name, flag, schema] if command == "contract" && flag == "--schema" => {
@@ -181,6 +234,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 serde_json::from_reader(io::stdin().lock())?;
                             let (candidates, features) =
                                 bang_features::extract(&analysis, sampling, None)?;
+                            model.score_context(candidates, features)?
+                        }
+                        MistakeKind::Overcommitting => {
+                            let analysis: ReplayAnalysis =
+                                serde_json::from_reader(io::stdin().lock())?;
+                            let (candidates, features) =
+                                overcommitting_features::extract(&analysis, sampling, None)?;
                             model.score_context(candidates, features)?
                         }
                     }

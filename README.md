@@ -14,6 +14,7 @@ A **candidate** is an incident worth reviewing. **Features** are measurements de
 | --- | --- |
 | `bumping_teammate` | [Teammate bump](docs/mistakes/bumping_teammate.md) |
 | `bang_with_time` | [Banging the ball away with time](docs/mistakes/bang_with_time.md) |
+| `overcommitting` | [Overcommitting](docs/mistakes/overcommitting.md) |
 
 Each guide defines candidate selection, incident keys, measurement frames, calculations, and extraction commands.
 
@@ -56,6 +57,8 @@ let candidates = kind.candidates(&replay_events)?;
 ```
 
 `replay_events` contains the supplier's events and recording identity, following [the input contract](docs/formats.md#replay-events). Each candidate identifies the incident and the player being judged and preserves the original event evidence. Labels are supplied by human review.
+
+Overcommitting requires native frames as well as events. Use `kind.candidates_from_analysis(&analysis)` with a combined `ReplayAnalysis`.
 
 ### Score candidates with a model
 
@@ -111,7 +114,7 @@ rl-mistake-analysis outputs
 
 All five supplier output forms are implemented using SubtrActor's collectors. `events` includes the analysis timeline and boost tracks; `replay_data` includes structured player and ball frames; `stats` includes accumulated statistics; `stats_timeline` includes full statistics snapshots; `features` includes a numeric matrix with metadata and column headers. The three additional exporters use the supplier's default configurations.
 
-The `events` and `replay-data` commands export their respective payloads individually. Candidate selection accepts standalone events and combined exports containing `events`. Replace `KIND` with an identifier from the implemented mistakes table, or use `candidates --all` to return every implemented kind.
+The `events` and `replay-data` commands export their respective payloads individually. Bump and bang candidates accept standalone events or combined exports. Overcommitting and `candidates --all` require combined `events,replay_data` exports. Replace `KIND` with an identifier from the implemented mistakes table, or use `candidates --all` to return every implemented kind.
 
 To score those incidents with an installed model:
 

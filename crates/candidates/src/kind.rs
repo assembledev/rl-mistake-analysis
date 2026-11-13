@@ -1,7 +1,7 @@
 use crate::feature_contract::{self, FeatureDefinition, FeatureSampling, SamplingMethod};
 use crate::input::ReplayFacts;
-use crate::{bang_features, bump_features};
-use crate::{native_bump, native_touch};
+use crate::{bang_features, bump_features, overcommitting_features};
+use crate::{native_bump, native_touch, overcommitting};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -21,10 +21,15 @@ pub struct KindDefinition {
 pub enum MistakeKind {
     BumpingTeammate,
     BangWithTime,
+    Overcommitting,
 }
 
 impl MistakeKind {
-    pub const ALL: [Self; 2] = [Self::BumpingTeammate, Self::BangWithTime];
+    pub const ALL: [Self; 3] = [
+        Self::BumpingTeammate,
+        Self::BangWithTime,
+        Self::Overcommitting,
+    ];
 
     pub fn parse(name: &str) -> Result<Self, String> {
         Self::ALL
@@ -57,6 +62,18 @@ impl MistakeKind {
                 sampling_method: SamplingMethod::NativeTouchStages,
                 candidates: native_touch::select,
                 anchor: native_touch::anchor,
+            },
+            Self::Overcommitting => &KindDefinition {
+                name: "overcommitting",
+                schema: overcommitting::SCHEMA,
+                feature_names: &[],
+                context_schema: overcommitting_features::SCHEMA,
+                context_definitions: overcommitting_features::definitions,
+                sampling_method: SamplingMethod::NativeIntervalBoundaries,
+                candidates: |_| {
+                    Err("overcommitting requires combined events and replay_data".into())
+                },
+                anchor: overcommitting::anchor,
             },
         }
     }
@@ -99,6 +116,26 @@ impl MistakeKind {
         replay.validate()?;
         let definition = self.definition();
         let candidates = (definition.candidates)(replay)?;
+        self.batch(replay, candidates)
+    }
+
+    pub fn candidates_from_analysis(
+        self,
+        analysis: &crate::feature_contract::ReplayAnalysis,
+    ) -> Result<CandidateBatch, String> {
+        if self == Self::Overcommitting {
+            self.batch(&analysis.facts(), overcommitting::candidates(analysis)?)
+        } else {
+            self.candidates(&analysis.facts())
+        }
+    }
+
+    fn batch(
+        self,
+        replay: &ReplayFacts,
+        candidates: Vec<Candidate>,
+    ) -> Result<CandidateBatch, String> {
+        let definition = self.definition();
         let batch = CandidateBatch {
             kind: definition.name.into(),
             input_schema: definition.schema.into(),
@@ -202,7 +239,7 @@ impl CandidateBatch {
             if ids.is_empty()
                 || ids.iter().any(|id| id.trim().is_empty())
                 || ids.windows(2).any(|pair| pair[0] == pair[1])
-                || !identities.insert((ids, subject))
+                || (self.kind != "overcommitting" && !identities.insert((ids, subject)))
             {
                 return Err("candidate event identities must be nonempty and unique".into());
             }

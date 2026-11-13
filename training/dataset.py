@@ -7,7 +7,13 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from training import bang_dataset, bump_dataset, context_dataset
+from training import bang_dataset, bump_dataset, context_dataset, overcommitting_dataset
+
+CONTEXT_READERS = {
+    "bumping_teammate": bump_dataset,
+    "bang_with_time": bang_dataset,
+    "overcommitting": overcommitting_dataset,
+}
 
 
 def load(path):
@@ -16,10 +22,9 @@ def load(path):
         if b"rl_mistake_analysis" in metadata:
             raise ValueError("A table must declare exactly one feature contract")
         kind = json.loads(metadata[context_dataset.METADATA_KEY])["kind"]
-        readers = {"bumping_teammate": bump_dataset, "bang_with_time": bang_dataset}
-        if kind not in readers:
+        if kind not in CONTEXT_READERS:
             raise ValueError(f"Unsupported context kind: {kind}")
-        table, contract = readers[kind].load(path, labeled=True)
+        table, contract = CONTEXT_READERS[kind].load(path, labeled=True)
         contract = {
             **contract,
             "feature_names": [d["name"] for d in contract["feature_definitions"]],
@@ -99,7 +104,7 @@ def load(path):
 def arrays(table, contract):
     if any(
         reader.supports_schema(contract["input_schema"])
-        for reader in (bump_dataset, bang_dataset)
+        for reader in CONTEXT_READERS.values()
     ):
         return context_dataset.arrays(table, contract)
     features = np.column_stack(
@@ -122,7 +127,7 @@ def select_features(contract, names, input_schema):
     if not any(
         reader.supports_schema(contract["input_schema"])
         and reader.supports_schema(input_schema)
-        for reader in (bump_dataset, bang_dataset)
+        for reader in CONTEXT_READERS.values()
     ):
         raise ValueError("Feature selection requires supported context schemas")
     available = {

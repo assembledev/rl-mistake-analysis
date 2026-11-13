@@ -23,6 +23,9 @@ def load(
     identity,
     duplicate_message,
     labeled=False,
+    source_id_field="source_event_id",
+    multiple_source_ids=False,
+    validation_fields=(),
 ):
     """Validate the context contract, preserving declared feature order and nulls."""
     table = pq.read_table(path)
@@ -39,7 +42,13 @@ def load(
         raise ValueError("Unsupported context contract or empty table")
     definitions = contract["feature_definitions"]
     names = [feature["name"] for feature in definitions]
-    required = [*identity_fields, "raw_time", "engine_revision", "source_event_id"]
+    required = [
+        *identity_fields,
+        "raw_time",
+        "engine_revision",
+        source_id_field,
+        *validation_fields,
+    ]
     if labeled:
         required.append("label")
     if (
@@ -62,6 +71,16 @@ def load(
         raise ValueError("Replay timestamps must be floating-point numbers")
     if not np.isfinite(table["raw_time"].to_numpy()).all():
         raise ValueError("Replay timestamps must be finite")
+    if multiple_source_ids:
+        for value in table[source_id_field].to_pylist():
+            ids = json.loads(value)
+            if (
+                not isinstance(ids, list)
+                or not ids
+                or any(not isinstance(value, str) or not value for value in ids)
+                or len(set(ids)) != len(ids)
+            ):
+                raise ValueError("Source event IDs must be distinct nonempty strings")
     for feature in definitions:
         name = feature["name"]
         if (
@@ -102,7 +121,20 @@ def arrays(table, contract):
 
 
 def prepare(
-    features, annotations, output, *, kind, load, identity_fields, json_fields, identity
+    features,
+    annotations,
+    output,
+    *,
+    kind,
+    load,
+    identity_fields,
+    json_fields,
+    identity,
+    source_id_field="source_event_id",
+    multiple_source_ids=False,
+    require_source_ids=False,
+    validation_fields=(),
+    validate_review=None,
 ):
     """Select reviewed subjects by exact replay, incident, player and timestamp."""
     output = Path(output)
@@ -116,7 +148,9 @@ def prepare(
         raise ValueError(
             "Provide a version-1 annotation document with reviewed players"
         )
-    rows = table.select([*identity_fields, "raw_time", "source_event_id"]).to_pylist()
+    rows = table.select(
+        [*identity_fields, "raw_time", source_id_field, *validation_fields]
+    ).to_pylist()
     lookup = {}
     for index, row in enumerate(rows):
         for name in json_fields:
@@ -138,10 +172,18 @@ def prepare(
         index, row = lookup[key]
         if review["raw_time"] != row["raw_time"]:
             raise ValueError("Review and feature replay timestamps differ")
-        if "source_event_ids" in review and review["source_event_ids"] != [
-            row["source_event_id"]
-        ]:
-            raise ValueError("Review and feature source events differ")
+        if require_source_ids and "source_event_ids" not in review:
+            raise ValueError("Each review requires its source event IDs")
+        if "source_event_ids" in review:
+            source_ids = (
+                json.loads(row[source_id_field])
+                if multiple_source_ids
+                else [row[source_id_field]]
+            )
+            if review["source_event_ids"] != source_ids:
+                raise ValueError("Review and feature source events differ")
+        if validate_review is not None:
+            validate_review(review, row)
         if type(review["label"]) is not int or review["label"] not in (0, 1):
             raise ValueError("Review labels must be integer 0 or 1")
         if (

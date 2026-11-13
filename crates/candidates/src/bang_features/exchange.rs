@@ -1,118 +1,11 @@
 use super::{ReplayContext, Samples, team_basis};
-use crate::feature_context::{Context, possession_state};
-use crate::feature_geometry::{directed_at_goal, goal_opening_distance};
+use crate::feature_context::Context;
+use crate::feature_geometry::directed_at_goal;
 use crate::feature_input::Event;
+use crate::feature_measurements::{
+    mean_team_distance, minimum_goal_distance, minimum_team_distance, possession_durations,
+};
 use crate::feature_values::Values;
-use std::collections::HashMap;
-
-#[derive(Clone, Copy)]
-pub(super) struct TeamDistance {
-    observed: bool,
-    nearest: Option<f64>,
-}
-
-pub(super) fn team_distances(
-    context: &Context<'_>,
-    roster: &HashMap<String, bool>,
-) -> Result<Vec<[TeamDistance; 2]>, String> {
-    let frames = &context.analysis.outputs.replay_data.frame_data;
-    let players = frames
-        .players
-        .iter()
-        .map(|(id, data)| {
-            Ok((
-                usize::from(roster[&id.to_string()]),
-                data,
-                context.states_by_frame("player_activity", id)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    (0..frames.metadata_frames.len())
-        .map(|frame| {
-            let Some(ball) = context.ball(Some(frame)) else {
-                return Ok([TeamDistance {
-                    observed: false,
-                    nearest: None,
-                }; 2]);
-            };
-            let mut distances = [TeamDistance {
-                observed: true,
-                nearest: None,
-            }; 2];
-            for (team, data, activity) in &players {
-                let team = *team;
-                match activity[frame] {
-                    Some("demolished") => continue,
-                    Some("tracked") => (),
-                    None => {
-                        distances[team].observed = false;
-                        continue;
-                    }
-                    Some(state) => return Err(format!("invalid player activity state: {state}")),
-                }
-                let Some(car) = data.frames[frame].body() else {
-                    distances[team].observed = false;
-                    continue;
-                };
-                let distance = ball.location.subtract(car.location).length();
-                if !distance.is_finite() {
-                    return Err("nonfinite car-ball distance".into());
-                }
-                distances[team].nearest = Some(
-                    distances[team]
-                        .nearest
-                        .map_or(distance, |old| old.min(distance)),
-                );
-            }
-            Ok(distances)
-        })
-        .collect()
-}
-
-fn minimum(values: impl Iterator<Item = TeamDistance>) -> Option<f64> {
-    let mut nearest: Option<f64> = None;
-    for value in values {
-        if !value.observed {
-            return None;
-        }
-        if let Some(distance) = value.nearest {
-            nearest = Some(nearest.map_or(distance, |old| old.min(distance)));
-        }
-    }
-    nearest
-}
-
-fn mean_distance(
-    replay: &ReplayContext<'_>,
-    range: Option<(usize, usize)>,
-    team: bool,
-) -> Option<f64> {
-    let (start, end) = range?;
-    let frames = &replay
-        .context
-        .analysis
-        .outputs
-        .replay_data
-        .frame_data
-        .metadata_frames;
-    let duration = frames[end].time - frames[start].time;
-    if duration == 0.0 {
-        return None;
-    }
-    let distance = |frame: usize| {
-        let value = replay.team_distances[frame][usize::from(team)];
-        value.nearest.filter(|_| value.observed)
-    };
-    let mut previous = distance(start)?;
-    let mut integral = 0.0;
-    for frame in start + 1..=end {
-        let current = distance(frame)?;
-        let elapsed = frames[frame].time - frames[frame - 1].time;
-        integral += (previous + current) * elapsed / 2.0;
-        previous = current;
-    }
-    Some(integral / duration)
-}
 
 pub(super) fn features(
     replay: &ReplayContext<'_>,
@@ -156,7 +49,7 @@ pub(super) fn features(
             values.float(
                 &format!("{relation}_ball_distance_{name}"),
                 range.and_then(|(start, end)| {
-                    minimum(
+                    minimum_team_distance(
                         (start..=end)
                             .map(|frame| replay.team_distances[frame][usize::from(other_team)]),
                     )
@@ -165,14 +58,14 @@ pub(super) fn features(
             if name == "candidate_to_first_touch" || name == "first_to_second_touch" {
                 values.float(
                     &format!("{relation}_ball_distance_mean_{name}"),
-                    mean_distance(replay, range, other_team),
+                    mean_team_distance(context, &replay.team_distances, range, other_team),
                 )?;
             }
         }
         for (goal, attacking_team) in [("own", !team), ("opponent", team)] {
             values.float(
                 &format!("ball_{goal}_goal_distance_{name}"),
-                goal_minimum(context, range, attacking_team)?,
+                minimum_goal_distance(context, range, attacking_team)?,
             )?;
         }
     }
@@ -221,25 +114,6 @@ pub(super) fn features(
     Ok(())
 }
 
-fn goal_minimum(
-    context: &Context<'_>,
-    range: Option<(usize, usize)>,
-    team: bool,
-) -> Result<Option<f64>, String> {
-    let Some((start, end)) = range else {
-        return Ok(None);
-    };
-    let mut nearest: Option<f64> = None;
-    for frame in start..=end {
-        let Some(ball) = context.ball(Some(frame)) else {
-            return Ok(None);
-        };
-        let distance = goal_opening_distance(ball.location, team)?;
-        nearest = Some(nearest.map_or(distance, |old| old.min(distance)));
-    }
-    Ok(nearest)
-}
-
 fn event_features(
     context: &Context<'_>,
     touch: &Event,
@@ -283,42 +157,4 @@ fn event_features(
         values.boolean(name, end.map(|_| found));
     }
     Ok(())
-}
-
-fn possession_durations(
-    context: &Context<'_>,
-    start: f64,
-    end: f64,
-    team: bool,
-) -> Result<Option<[f64; 3]>, String> {
-    let mut spans = context
-        .events("possession")
-        .iter()
-        .map(|event| Ok((event.number("time")?, event.number("end_time")?, *event)))
-        .collect::<Result<Vec<_>, String>>()?;
-    spans.sort_by(|left, right| left.0.total_cmp(&right.0));
-    let mut duration = [0.0; 3];
-    let mut cursor = start;
-    for (span_start, span_end, event) in spans {
-        let left = start.max(span_start);
-        let right = end.min(span_end);
-        if left >= right {
-            continue;
-        }
-        if left < cursor {
-            return Err("overlapping possession spans during exchange".into());
-        }
-        if left > cursor {
-            return Ok(None);
-        }
-        let index = match possession_state(event.text("possession_state")?, team)? {
-            "own_team" => 0,
-            "opponent" => 1,
-            "neutral" => 2,
-            _ => unreachable!(),
-        };
-        duration[index] += right - left;
-        cursor = right;
-    }
-    Ok((cursor == end).then_some(duration))
 }

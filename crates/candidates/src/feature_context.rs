@@ -84,6 +84,23 @@ impl<'a> Context<'a> {
         player: Option<&Value>,
         time: f64,
     ) -> Result<Option<&'a str>, String> {
+        self.state_event(stream, player, time)?
+            .map(|event| {
+                event.text(if stream == "possession" {
+                    "possession_state"
+                } else {
+                    "state"
+                })
+            })
+            .transpose()
+    }
+
+    pub(crate) fn state_event(
+        &self,
+        stream: &str,
+        player: Option<&Value>,
+        time: f64,
+    ) -> Result<Option<&'a Event>, String> {
         let mut state = None;
         for event in self.events(stream) {
             if let Some(player) = player
@@ -97,11 +114,12 @@ impl<'a> Context<'a> {
                 if state.is_some() {
                     return Err(format!("overlapping {stream} state spans at {time}"));
                 }
-                state = Some(event.text(if stream == "possession" {
+                event.text(if stream == "possession" {
                     "possession_state"
                 } else {
                     "state"
-                })?);
+                })?;
+                state = Some(*event);
             }
         }
         Ok(state)
@@ -368,5 +386,135 @@ impl<'a> Context<'a> {
         };
         values.0.insert("touches_before_next_goal".into(), count);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Context;
+    use crate::feature_input::ReplayAnalysis;
+    use serde_json::{Value, json};
+
+    fn event(id: &str, stream: &str, payload: Value) -> Value {
+        json!({"meta": {"id": id, "stream": stream}, "payload": {"kind": stream, "payload": payload}})
+    }
+
+    fn analysis(events: Vec<Value>) -> ReplayAnalysis {
+        serde_json::from_value(json!({
+            "name": "subtr-actor", "schema_version": 1, "status": "ok", "revision": "supplier", "replay_sha256": "a".repeat(64),
+            "outputs": {
+                "events": {"replay_meta": null, "accumulation_tracks": [], "events": {"events": events}},
+                "replay_data": {"boost_pad_events": [], "boost_pads": [], "frame_data": {
+                    "metadata_frames": [{"time": 0.0}], "ball_data": {"frames": ["Empty"]}, "players": []
+                }}
+            }
+        })).unwrap()
+    }
+
+    #[test]
+    fn state_event_preserves_native_start_exclusive_end_inclusive_boundaries() {
+        let analysis = analysis(vec![
+            event(
+                "before",
+                "possession",
+                json!({"time": 0.0, "end_time": 1.0, "possession_state": "neutral"}),
+            ),
+            event(
+                "after",
+                "possession",
+                json!({"time": 1.0, "end_time": 2.0, "possession_state": "team_zero"}),
+            ),
+        ]);
+        let context = Context::new(&analysis, &["possession"]).unwrap();
+        for (time, id, state) in [
+            (0.0, None, None),
+            (1.0, Some("before"), Some("neutral")),
+            (1.5, Some("after"), Some("team_zero")),
+            (2.0, Some("after"), Some("team_zero")),
+            (2.5, None, None),
+        ] {
+            assert_eq!(
+                context
+                    .state_event("possession", None, time)
+                    .unwrap()
+                    .map(|event| event.meta.id.as_str()),
+                id
+            );
+            assert_eq!(context.state("possession", None, time).unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn state_event_keeps_participant_filtering_and_overlap_errors() {
+        let blue = json!({"Epic": "blue"});
+        let orange = json!({"Epic": "orange"});
+        let analysis = analysis(vec![
+            event(
+                "blue",
+                "player_activity",
+                json!({"time": 0.0, "end_time": 2.0, "player": blue, "state": "tracked"}),
+            ),
+            event(
+                "orange",
+                "player_activity",
+                json!({"time": 0.0, "end_time": 2.0, "player": orange, "state": "demolished"}),
+            ),
+        ]);
+        let context = Context::new(&analysis, &["player_activity"]).unwrap();
+        assert_eq!(
+            context
+                .state_event("player_activity", Some(&blue), 1.0)
+                .unwrap()
+                .unwrap()
+                .meta
+                .id,
+            "blue"
+        );
+        assert_eq!(
+            context
+                .state("player_activity", Some(&orange), 1.0)
+                .unwrap(),
+            Some("demolished")
+        );
+        let error = "overlapping player_activity state spans at 1";
+        assert_eq!(
+            context
+                .state_event("player_activity", None, 1.0)
+                .unwrap_err(),
+            error
+        );
+        assert_eq!(
+            context.state("player_activity", None, 1.0).unwrap_err(),
+            error
+        );
+    }
+
+    #[test]
+    fn state_event_validates_matching_state_text_before_a_later_overlap() {
+        let analysis = analysis(vec![
+            event(
+                "malformed",
+                "possession",
+                json!({"time": 0.0, "end_time": 2.0, "possession_state": 7}),
+            ),
+            event(
+                "overlap",
+                "possession",
+                json!({"time": 0.0, "end_time": 2.0, "possession_state": "neutral"}),
+            ),
+        ]);
+        let context = Context::new(&analysis, &["possession"]).unwrap();
+        let error = "event malformed has invalid possession_state";
+        assert_eq!(
+            context.state_event("possession", None, 1.0).unwrap_err(),
+            error
+        );
+        assert_eq!(context.state("possession", None, 1.0).unwrap_err(), error);
+        assert!(
+            context
+                .state_event("possession", None, 0.0)
+                .unwrap()
+                .is_none()
+        );
     }
 }
