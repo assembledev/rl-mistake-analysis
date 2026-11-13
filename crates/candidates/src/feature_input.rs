@@ -153,6 +153,8 @@ pub(crate) enum PlayerFrame {
     Data {
         rigid_body: Body,
         dodge_active: bool,
+        #[serde(default)]
+        jump_active: Option<bool>,
     },
 }
 
@@ -227,6 +229,15 @@ impl Vector {
         })
     }
 
+    pub fn unit(self) -> Option<Self> {
+        let length = self.length();
+        (length > 0.0).then(|| Self {
+            x: self.x / length,
+            y: self.y / length,
+            z: self.z / length,
+        })
+    }
+
     pub fn project(self, toward: Self) -> [f64; 3] {
         [
             self.x * toward.x + self.y * toward.y,
@@ -245,6 +256,12 @@ pub(crate) struct Rotation {
 }
 
 impl Rotation {
+    pub fn angle_change(&self, other: &Self) -> Result<f64, String> {
+        let norm = (self.norm()? * other.norm()?).sqrt();
+        let dot = self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w;
+        Ok(2.0 * (dot.abs() / norm).clamp(0.0, 1.0).acos())
+    }
+
     pub fn upright(&self) -> Result<f64, String> {
         let norm = self.norm()?;
         Ok(1.0 - 2.0 * (self.x * self.x + self.y * self.y) / norm)
@@ -303,6 +320,8 @@ pub(crate) enum PadEventKind {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Pad {
+    pub index: Option<usize>,
+    pub size: Option<String>,
     #[serde(deserialize_with = "required_nullable")]
     pub pad_id: Option<String>,
     pub position: Vector,

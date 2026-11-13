@@ -241,3 +241,105 @@ fn manifest_rejects_unsafe_paths_duplicate_models_and_conflicting_hashes() {
     conflict.models.push(other);
     assert!(conflict.validate().is_err());
 }
+
+#[test]
+fn context_scoring_distinguishes_intervals_sharing_native_events() {
+    use rl_mistake_analysis_candidates::{Candidate, feature_contract as contract};
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+
+    struct Row {
+        key: String,
+        candidate: Candidate,
+        values: BTreeMap<String, Option<contract::Measurement>>,
+    }
+    impl contract::ContextFeatures for Row {
+        fn key(&self) -> (&str, &Value) {
+            (&self.key, &self.candidate.player_id)
+        }
+        fn validate_candidate(&self, candidate: &Candidate) -> Result<(), String> {
+            if self.candidate.source_event_ids != candidate.source_event_ids
+                || self.candidate.evidence != candidate.evidence
+            {
+                return Err("interval evidence mismatch".into());
+            }
+            Ok(())
+        }
+        fn features(&self) -> &BTreeMap<String, Option<contract::Measurement>> {
+            &self.values
+        }
+    }
+
+    let (directory, mut catalog) = manifest("square.onnx");
+    let kind = MistakeKind::Overcommitting;
+    let definition = kind.definition();
+    let definitions = (definition.context_definitions)();
+    let sampling = contract::FeatureSampling {
+        method: contract::SamplingMethod::NativeIntervalBoundaries,
+    };
+    let entry = &mut catalog.models[0];
+    entry.kind = kind.name().into();
+    entry.input_schema = definition.context_schema.into();
+    entry.candidate_schema = Some(kind.schema().into());
+    entry.feature_names = definitions
+        .iter()
+        .take(8)
+        .map(|item| item.name.clone())
+        .collect();
+    entry.sampling = Some(sampling);
+    save_manifest(directory.path(), &catalog);
+    let mut model = Model::load(directory.path(), kind.name(), "1.0.0").unwrap();
+    let candidates: Vec<Candidate> = [10_u64, 20]
+        .into_iter()
+        .map(|frame| Candidate {
+            kind: kind.name().into(),
+            source_event_ids: vec!["touch:a".into(), "touch:b".into()],
+            frame,
+            raw_time: frame as f64,
+            player_id: json!({"Epic":"subject"}),
+            features: vec![],
+            evidence: json!({
+                "start_frame":frame,"end_frame":frame+1,"start_time":frame as f64,
+                "end_time":(frame+1) as f64,"passage_frame":frame+1,
+                "passage_time":(frame+1) as f64,"player":{"Epic":"subject"},
+                "finish":"ball_passage"
+            }),
+        })
+        .collect();
+    let rows = candidates
+        .iter()
+        .zip([0.8_f32, 0.3])
+        .rev()
+        .map(|(candidate, value)| Row {
+            key: contract::context_key(candidate).unwrap(),
+            candidate: candidate.clone(),
+            values: definitions
+                .iter()
+                .take(8)
+                .map(|item| (item.name.clone(), Some(contract::Measurement::Float(value))))
+                .collect(),
+        })
+        .collect();
+    let batch = CandidateBatch {
+        kind: kind.name().into(),
+        input_schema: kind.schema().into(),
+        feature_names: vec![],
+        engine_revision: "supplier".into(),
+        replay_sha256: "a".repeat(64),
+        sampling: None,
+        feature_definitions: vec![],
+        candidates,
+    };
+    let features = contract::FeatureBatch {
+        input_schema: definition.context_schema,
+        engine_revision: batch.engine_revision.clone(),
+        replay_sha256: batch.replay_sha256.clone(),
+        sampling,
+        feature_definitions: definitions,
+        rows,
+    };
+    let predictions = model.score_context(batch, features).unwrap().predictions;
+    assert_eq!(predictions.len(), 2);
+    assert!((predictions[0].score - 0.64).abs() < 1e-6);
+    assert!((predictions[1].score - 0.09).abs() < 1e-6);
+}

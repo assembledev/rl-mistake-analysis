@@ -9,8 +9,7 @@ from pathlib import Path
 
 import onnx
 
-from training import bang_dataset, bump_dataset
-from training.dataset import load, select_features
+from training.dataset import CONTEXT_READERS, load, select_features
 
 
 def tensor_locations(message):
@@ -119,7 +118,7 @@ def model_entry(
         entry["candidate_schema"] = candidate_schema
     if any(
         reader.supports_schema(contract["input_schema"])
-        for reader in (bump_dataset, bang_dataset)
+        for reader in CONTEXT_READERS.values()
     ):
         entry["sampling"] = contract["sampling"]
     return entry

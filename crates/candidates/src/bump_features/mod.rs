@@ -1,12 +1,12 @@
 //! Subject-specific teammate-bump measurements from combined replay analysis.
 
-mod sampling;
 mod schema;
 
 pub use crate::feature_contract::{FeatureSampling, SamplingMethod};
 pub use crate::feature_input::ReplayAnalysis;
 pub use crate::feature_values::Measurement;
-pub use sampling::{ParticipantSamples, SamplingStatus};
+use crate::impact_sampling as sampling;
+pub use crate::impact_sampling::{ParticipantSamples, SamplingStatus};
 pub use schema::{DataType, FeatureDefinition, definitions};
 
 use crate::Candidate;

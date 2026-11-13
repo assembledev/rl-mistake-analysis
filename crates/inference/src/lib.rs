@@ -146,7 +146,7 @@ impl Model {
         self.score_features(batch, inputs)
     }
 
-    /// Join context measurements to candidates by event and judged player.
+    /// Join context measurements by native incident identity and judged player.
     pub fn score_context<R: ContextFeatures>(
         &mut self,
         batch: CandidateBatch,
@@ -184,11 +184,8 @@ impl Model {
         }
         let mut inputs = Vec::with_capacity(batch.candidates.len());
         for candidate in &batch.candidates {
-            if candidate.source_event_ids.len() != 1 {
-                return Err("context scoring requires one source event per candidate".into());
-            }
             let key = (
-                candidate.source_event_ids[0].clone(),
+                feature_contract::context_key(candidate)?,
                 serde_json::to_string(&candidate.player_id).map_err(|error| error.to_string())?,
             );
             let row = rows

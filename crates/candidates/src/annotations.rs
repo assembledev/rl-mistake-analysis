@@ -17,6 +17,10 @@ pub enum IncidentAnchor {
         frame: u64,
         touch_id: u64,
     },
+    Overcommitting {
+        frame: u64,
+        end_frame: u64,
+    },
 }
 
 impl IncidentAnchor {
@@ -24,6 +28,7 @@ impl IncidentAnchor {
         match self {
             Self::BumpingTeammate { .. } => MistakeKind::BumpingTeammate,
             Self::BangWithTime { .. } => MistakeKind::BangWithTime,
+            Self::Overcommitting { .. } => MistakeKind::Overcommitting,
         }
     }
 
@@ -91,7 +96,8 @@ impl Annotation {
         }
         let candidate = match &self.incident {
             IncidentAnchor::BumpingTeammate { frame, .. }
-            | IncidentAnchor::BangWithTime { frame, .. } => Candidate {
+            | IncidentAnchor::BangWithTime { frame, .. }
+            | IncidentAnchor::Overcommitting { frame, .. } => Candidate {
                 kind: self.incident.kind().name().into(),
                 frame: *frame,
                 raw_time: self.raw_time,

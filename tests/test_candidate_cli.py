@@ -44,15 +44,39 @@ def test_native_events_determine_candidates_in_both_formats(engine, combined):
     }
     if combined:
         document["outputs"] = {"events": {"events": {"events": document.pop("events")}}}
-    batches = run(engine, "candidates", "--all", document=document)
-    assert batches.returncode == 0, batches.stderr
-    bump, bang = json.loads(batches.stdout)
+    results = [
+        run(engine, "candidates", kind, document=document)
+        for kind in ("bumping_teammate", "bang_with_time")
+    ]
+    for result in results:
+        assert result.returncode == 0, result.stderr
+    bump, bang = [json.loads(result.stdout)[0] for result in results]
     assert not bump["candidates"]
     assert [candidate["frame"] for candidate in bang["candidates"]] == [1, 3]
-    for batch in (bump, bang):
+
+
+def test_all_candidates_requires_native_frames_and_matches_each_kind(
+    engine, combined_analysis
+):
+    document = json.loads(combined_analysis.read_text())
+    result = run(engine, "candidates", "--all", document=document)
+    assert result.returncode == 0, result.stderr
+    batches = json.loads(result.stdout)
+    assert [batch["kind"] for batch in batches] == [
+        "bumping_teammate",
+        "bang_with_time",
+        "overcommitting",
+    ]
+    for batch in batches:
         selected = run(engine, "candidates", batch["kind"], document=document)
         assert selected.returncode == 0, selected.stderr
         assert json.loads(selected.stdout) == [batch]
+    del document["outputs"]["replay_data"]
+    for kind in ("overcommitting", "--all"):
+        result = run(engine, "candidates", kind, document=document)
+        assert result.returncode == 1
+        assert not result.stdout
+        assert "replay_data" in result.stderr
 
 
 @pytest.mark.parametrize(

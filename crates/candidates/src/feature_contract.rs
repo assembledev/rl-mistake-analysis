@@ -16,6 +16,7 @@ pub struct FeatureSampling {
 pub enum SamplingMethod {
     FirstAccelerationPeakThenMinimum,
     NativeTouchStages,
+    NativeIntervalBoundaries,
 }
 
 impl FeatureSampling {
@@ -41,6 +42,18 @@ pub trait ContextFeatures {
     fn key(&self) -> (&str, &Value);
     fn validate_candidate(&self, candidate: &Candidate) -> Result<(), String>;
     fn features(&self) -> &BTreeMap<String, Option<Measurement>>;
+}
+
+pub fn context_key(candidate: &Candidate) -> Result<String, String> {
+    match candidate.anchor()? {
+        crate::annotations::IncidentAnchor::Overcommitting { frame, end_frame } => {
+            Ok(format!("overcommitting:{frame}:{end_frame}"))
+        }
+        _ => match candidate.source_event_ids.as_slice() {
+            [event] => Ok(event.clone()),
+            _ => Err("contact context requires exactly one source event".into()),
+        },
+    }
 }
 
 pub fn supports_schema(base: &str, schema: &str) -> bool {

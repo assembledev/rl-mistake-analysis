@@ -21,6 +21,9 @@ def compute(
     expected_sampling,
     participant_fields,
     integer_fields=(),
+    source_id_field="source_event_id",
+    multiple_source_ids=False,
+    incident_fields=("source_event_id",),
 ):
     paths = [Path(path) for path in paths]
     if not paths:
@@ -38,7 +41,7 @@ def compute(
     for path in paths:
         with Path(path).open("rb") as analysis:
             result = subprocess.run(
-                [str(engine), *command],
+                [str(engine), *(command(path) if callable(command) else command)],
                 stdin=analysis,
                 capture_output=True,
                 check=False,
@@ -76,7 +79,7 @@ def compute(
         replays.append(reference)
         for row in batch["rows"]:
             player_id = json.dumps(row["player_id"], sort_keys=True)
-            identity = (checksum, row["source_event_id"], player_id)
+            identity = (checksum, *(row[field] for field in incident_fields), player_id)
             if identity in identities:
                 raise ValueError(f"Duplicate feature row identity: {path}")
             identities.add(identity)
@@ -84,7 +87,11 @@ def compute(
                 {
                     "replay_sha256": checksum,
                     "engine_revision": batch["engine_revision"],
-                    "source_event_id": row["source_event_id"],
+                    source_id_field: (
+                        json.dumps(row[source_id_field])
+                        if multiple_source_ids
+                        else row[source_id_field]
+                    ),
                     "frame": row["frame"],
                     "raw_time": row["raw_time"],
                     "player_id": player_id,
@@ -102,7 +109,7 @@ def compute(
     data_types = {"boolean": pa.bool_(), "f32": pa.float32(), "u32": pa.uint32()}
     fields = [
         pa.field(name, pa.string(), nullable=False)
-        for name in ("replay_sha256", "engine_revision", "source_event_id")
+        for name in ("replay_sha256", "engine_revision", source_id_field)
     ]
     fields.extend(
         [

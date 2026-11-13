@@ -12,11 +12,19 @@ pub(crate) fn goal_opening_distance(
     position: Vector,
     attacking_team_zero: bool,
 ) -> Result<f64, String> {
+    let distance = point_goal_opening_distance(position, attacking_team_zero)?;
+    Ok((distance - f64::from(BALL_COLLISION_RADIUS)).max(0.0))
+}
+
+pub(crate) fn point_goal_opening_distance(
+    position: Vector,
+    attacking_team_zero: bool,
+) -> Result<f64, String> {
     if ![position.x, position.y, position.z]
         .into_iter()
         .all(f64::is_finite)
     {
-        return Err("nonfinite ball position".into());
+        return Err("nonfinite position".into());
     }
     let half_width = f64::from(STANDARD_GOAL_MOUTH_HALF_WIDTH_X);
     let height = f64::from(STANDARD_GOAL_MOUTH_HEIGHT_Z);
@@ -27,9 +35,9 @@ pub(crate) fn goal_opening_distance(
     };
     let distance = position.subtract(nearest).length();
     if !distance.is_finite() {
-        return Err("nonfinite ball-goal distance".into());
+        return Err("nonfinite goal-opening distance".into());
     }
-    Ok((distance - f64::from(BALL_COLLISION_RADIUS)).max(0.0))
+    Ok(distance)
 }
 
 pub(crate) fn directed_at_goal(
